@@ -135,9 +135,12 @@ Pro PC: **Gerät › Einstellungen › Testgerät** (ideal: dein eigener PC) und
 
 ### Veröffentlichen
 
+**Am Handy:** GitHub-App oder github.com › Repo › *Actions* › **Release** › *Run workflow* › Version eintragen (z. B. `1.0.1`) › starten.
+
+**Am PC:**
 ```sh
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.0.1
+git push origin v1.0.1
 ```
 
 1. GitHub Actions testet, baut Agent + Server (Windows, Linux, Raspberry Pi), signiert und veröffentlicht das Release mit `SHA256SUMS.txt` (+ Signatur). Dauer: wenige Minuten.
