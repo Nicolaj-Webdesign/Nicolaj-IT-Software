@@ -1,0 +1,162 @@
+# Neues Release: git tag v1.0.1 && git push origin v1.0.1
+# → baut Agent + Server, signiert (falls eingerichtet), erstellt das GitHub-Release,
+#   baut das Docker-Image (ghcr.io/<org>/<repo>) und stößt Coolify an (falls eingerichtet).
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: windows-latest   # wegen der Windows-Code-Signatur; Go baut die Linux-Versionen trotzdem mit
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Version aus dem Tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Tests
+        run: go test ./agent
+
+      - name: Agent bauen
+        run: bash ./build.sh agent
+
+      # ---------- Optional: Code-Signatur mit Microsoft Artifact Signing ----------
+      # Einrichten: Repository-Variable SIGNING=azure und die Secrets AZURE_TENANT_ID,
+      # AZURE_CLIENT_ID, AZURE_CLIENT_SECRET sowie die Variablen AZURE_SIGNING_ENDPOINT,
+      # AZURE_SIGNING_ACCOUNT, AZURE_CERT_PROFILE. (Aktuelle Version der Action prüfen:
+      # https://github.com/Azure/artifact-signing-action)
+      - name: Agent signieren
+        if: ${{ vars.SIGNING == 'azure' }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Server bauen (enthält den signierten Agent)
+        run: bash ./build.sh server
+
+      - name: Agent zur Seite legen (wird nicht doppelt signiert)
+        if: ${{ vars.SIGNING == 'azure' }}
+        run: mkdir -p signed && mv dist/nicolaj-agent.exe signed/
+
+      - name: Server (Windows) signieren
+        if: ${{ vars.SIGNING == 'azure' }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Agent zurücklegen
+        if: ${{ vars.SIGNING == 'azure' }}
+        run: mv signed/nicolaj-agent.exe dist/
+
+      # ---------- Prüfsummen + Release-Signatur ----------
+      - name: Prüfsummen
+        run: bash ./build.sh sums
+
+      - name: Prüfsummen signieren (Release-Schlüssel)
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -n "$RELEASE_SIGNING_KEY" ]; then
+            go run ./tools/releasekey sign dist/SHA256SUMS.txt
+          else
+            echo "::warning::Kein RELEASE_SIGNING_KEY – Release wird ohne Signatur veröffentlicht."
+          fi
+
+      - name: GitHub-Release erstellen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "Nicolaj Fernwartung $VERSION" \
+            --generate-notes
+
+      - name: Dateien für das Docker-Image weitergeben
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # ---------- Docker-Image für Coolify + automatisches Deployment ----------
+  docker:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Dateirechte wiederherstellen
+        run: chmod +x dist/nicolaj-rmm-server-linux-*
+
+      - name: Image-Name (GHCR braucht Kleinbuchstaben)
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Image bauen und hochladen (amd64 + arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+
+      # Coolify: Anwendung › Webhooks › „Deploy Webhook“ als Secret COOLIFY_WEBHOOK,
+      # Coolify › Keys & Tokens › API-Token als Secret COOLIFY_TOKEN.
+      - name: Coolify neu deployen
+        env:
+          COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+        run: |
+          if [ -z "$COOLIFY_WEBHOOK" ] || [ -z "$COOLIFY_TOKEN" ]; then
+            echo "::notice::COOLIFY_WEBHOOK/COOLIFY_TOKEN nicht gesetzt – Coolify wird nicht automatisch aktualisiert."
+            exit 0
+          fi
+          curl --fail --silent --show-error --request GET "$COOLIFY_WEBHOOK" --header "Authorization: Bearer $COOLIFY_TOKEN"

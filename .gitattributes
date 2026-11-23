@@ -1,0 +1,8 @@
+# Skripte immer mit LF – sonst bricht bash auf dem Windows-Runner ab.
+*.sh   text eol=lf
+*.go   text eol=lf
+*.yml  text eol=lf
+Dockerfile text eol=lf
+*.ps1  text eol=crlf
+*.exe  binary
+*.png  binary

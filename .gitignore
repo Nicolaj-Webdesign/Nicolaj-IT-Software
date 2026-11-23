@@ -1,0 +1,5 @@
+dist/
+data/
+sim-data/
+server/assets/nicolaj-agent.exe
+*.exe
