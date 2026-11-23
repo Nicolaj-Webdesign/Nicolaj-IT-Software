@@ -50,7 +50,8 @@ type App struct {
 }
 
 // trustProxy: Client-IP aus X-Real-IP / X-Forwarded-For lesen (nur hinter einem Proxy aktivieren!).
-var trustProxy bool
+// trustCloudflare: zusätzlich CF-Connecting-IP (Cloudflare Tunnel) – nur setzen, wenn alles über Cloudflare kommt.
+var trustProxy, trustCloudflare bool
 
 func envOr(k, def string) string {
 	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
@@ -74,8 +75,10 @@ func main() {
 	noTLS := flag.Bool("no-tls", envBool("NRMM_NO_TLS"), "ohne HTTPS starten – nur hinter einem Reverse-Proxy (NRMM_NO_TLS)")
 	behindProxy := flag.Bool("behind-proxy", envBool("NRMM_BEHIND_PROXY"), "läuft hinter Coolify/Traefik/Caddy (NRMM_BEHIND_PROXY)")
 	publicURL := flag.String("public-url", envOr("NRMM_PUBLIC_URL", ""), "öffentliche Adresse, z. B. https://rmm.nicolaj-webdesign.de (NRMM_PUBLIC_URL)")
+	cloudflareIP := flag.Bool("cloudflare", envBool("NRMM_CLOUDFLARE"), "Zugriff über Cloudflare (Tunnel): Besucher-IP aus CF-Connecting-IP (NRMM_CLOUDFLARE)")
 	flag.Parse()
 	trustProxy = *behindProxy
+	trustCloudflare = *cloudflareIP && *behindProxy
 
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatal(err)
@@ -174,6 +177,14 @@ func (a *App) printBanner() {
 	}
 	if a.behindProxy && a.publicURL == "" {
 		fmt.Println("\n  Hinweis: NRMM_PUBLIC_URL ist nicht gesetzt (z. B. https://rmm.nicolaj-webdesign.de).")
+	}
+	if a.container {
+		if coolifyConfigured() {
+			fmt.Println("\n  Server-Updates: über den Coolify-Webhook, sobald auf GitHub ein neueres Release liegt.")
+		}
+		if trustCloudflare {
+			fmt.Println("  Besucher-IP: aus Cloudflare (CF-Connecting-IP).")
+		}
 	}
 	if a.tls {
 		fmt.Println("\n  Beim ersten Öffnen zeigt der Browser eine Zertifikatswarnung –")
@@ -493,6 +504,11 @@ func normalizeCode(s string) string {
 }
 
 func clientIP(r *http.Request) string {
+	if trustCloudflare {
+		if ip := strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip")); net.ParseIP(ip) != nil {
+			return ip
+		}
+	}
 	if trustProxy {
 		if ip := strings.TrimSpace(r.Header.Get("X-Real-Ip")); ip != "" && net.ParseIP(ip) != nil {
 			return ip
@@ -524,6 +540,10 @@ func (a *App) scheme(r *http.Request) string {
 		return "https"
 	}
 	if a.behindProxy {
+		// Bei Cloudflare Tunnel spricht der Tunnel intern HTTP mit Coolify – maßgeblich ist die öffentliche Adresse.
+		if strings.HasPrefix(a.publicURL, "https://") {
+			return "https"
+		}
 		if p := r.Header.Get("X-Forwarded-Proto"); p == "http" || p == "https" {
 			return p
 		}

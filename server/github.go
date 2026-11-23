@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -64,10 +65,88 @@ type ghStatus struct {
 
 var gh ghStatus
 
+// Coolify ohne öffentliche IP: GitHub erreicht den Coolify-Webhook nicht. Deshalb ruft der
+// Server ihn selbst auf (im Heimnetz), sobald auf GitHub ein neueres Release liegt.
+var coolify struct {
+	mu          sync.Mutex
+	webhook     string
+	token       string
+	LastVersion string    `json:"lastVersion"`
+	LastAt      time.Time `json:"lastAt"`
+	LastOK      bool      `json:"lastOk"`
+	LastResult  string    `json:"lastResult"`
+}
+
 func init() {
 	if v := os.Getenv("NRMM_GITHUB_API"); v != "" {
 		ghAPI = strings.TrimRight(v, "/")
 	}
+	coolify.webhook = strings.TrimSpace(os.Getenv("NRMM_COOLIFY_WEBHOOK"))
+	coolify.token = strings.TrimSpace(os.Getenv("NRMM_COOLIFY_TOKEN"))
+}
+
+func coolifyConfigured() bool {
+	coolify.mu.Lock()
+	defer coolify.mu.Unlock()
+	return coolify.webhook != "" && coolify.token != ""
+}
+
+func validCoolifyWebhook(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && strings.Contains(u.Path, "/deploy")
+}
+
+// triggerCoolify stößt ein neues Deployment an (Coolify lädt dann :latest neu).
+func (a *App) triggerCoolify(version, user string, r *http.Request) error {
+	coolify.mu.Lock()
+	hook, tok := coolify.webhook, coolify.token
+	coolify.mu.Unlock()
+	if hook == "" || tok == "" {
+		return errors.New("NRMM_COOLIFY_WEBHOOK und NRMM_COOLIFY_TOKEN sind in Coolify nicht gesetzt")
+	}
+	if !validCoolifyWebhook(hook) {
+		return errors.New("NRMM_COOLIFY_WEBHOOK ist keine gültige Deploy-Webhook-Adresse")
+	}
+	req, err := http.NewRequest("GET", hook, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("User-Agent", "nicolaj-rmm-server/"+serverVersion)
+	var result string
+	ok := false
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		result = "nicht erreichbar: " + err.Error()
+	} else {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		switch {
+		case resp.StatusCode >= 200 && resp.StatusCode < 300:
+			ok, result = true, "Deployment gestartet"
+		case resp.StatusCode == 401 || resp.StatusCode == 403:
+			result = "Coolify lehnt ab (" + resp.Status + ") – API aktiviert und Token richtig?"
+		default:
+			msg := strings.TrimSpace(string(body))
+			if len(msg) > 200 {
+				msg = msg[:200]
+			}
+			result = "Coolify antwortet mit " + resp.Status + " " + msg
+		}
+	}
+	coolify.mu.Lock()
+	coolify.LastVersion, coolify.LastAt, coolify.LastOK, coolify.LastResult = version, time.Now(), ok, result
+	coolify.mu.Unlock()
+	e := &AuditEntry{Time: time.Now(), User: user, Action: "Server-Update über Coolify", Detail: fmt.Sprintf("%s → %s: %s", serverVersion, version, result)}
+	if r != nil {
+		e.IP = clientIP(r)
+	}
+	a.store.Update(func(d *DBData) { d.Audit = append(d.Audit, e) })
+	if !ok {
+		return errors.New(result)
+	}
+	a.hub.Broadcast("alert", map[string]any{"level": "info", "title": "Server-Update " + version, "detail": "Coolify startet den Server neu – das Dashboard verbindet sich gleich wieder."})
+	return nil
 }
 
 func serverAssetName() string {
@@ -220,10 +299,24 @@ func (a *App) checkGitHub(r *http.Request) error {
 	version := strings.TrimPrefix(rel.TagName, "v")
 	gh.Tag, gh.Version, gh.URL, gh.PublishedAt, gh.Signed, gh.Error = rel.TagName, version, rel.HTMLURL, rel.PublishedAt, signed, ""
 	gh.ServerAsset, gh.ServerUpdate = serverAssetName(), ""
-	if !a.container && gh.ServerAsset != "" && findAsset(rel, gh.ServerAsset) != nil && versionLess(serverVersion, version) {
+	if a.container && versionLess(serverVersion, version) {
+		gh.ServerUpdate = version // das Image zu diesem Release liegt bereits in der Registry
+	} else if !a.container && gh.ServerAsset != "" && findAsset(rel, gh.ServerAsset) != nil && versionLess(serverVersion, version) {
 		gh.ServerUpdate = version
 	}
 	gh.mu.Unlock()
+
+	// Coolify automatisch anstoßen – höchstens einmal pro Stunde und Version.
+	if a.container && s.GitHubAuto && versionLess(serverVersion, version) && coolifyConfigured() {
+		coolify.mu.Lock()
+		recent := coolify.LastVersion == version && time.Since(coolify.LastAt) < 50*time.Minute
+		coolify.mu.Unlock()
+		if !recent {
+			if err := a.triggerCoolify(version, "GitHub", r); err != nil {
+				fmt.Fprintln(os.Stderr, "Coolify:", err)
+			}
+		}
+	}
 
 	cur := a.currentAgent()
 	if !s.GitHubAuto || (cur != nil && !versionLess(cur.Version, version)) {
@@ -276,7 +369,12 @@ func (a *App) githubView() map[string]any {
 		"busy": gh.Busy, "serverVersion": serverVersion, "container": a.container,
 	}
 	gh.mu.Unlock()
-	return map[string]any{"repo": s.GitHubRepo, "hasToken": s.GitHubToken != "", "auto": s.GitHubAuto, "pubKey": s.ReleasePubKey, "status": status}
+	coolify.mu.Lock()
+	cv := map[string]any{"configured": coolify.webhook != "" && coolify.token != "", "lastVersion": coolify.LastVersion,
+		"lastAt": coolify.LastAt, "lastOk": coolify.LastOK, "lastResult": coolify.LastResult}
+	coolify.mu.Unlock()
+	return map[string]any{"repo": s.GitHubRepo, "hasToken": s.GitHubToken != "", "auto": s.GitHubAuto, "pubKey": s.ReleasePubKey,
+		"status": status, "container": a.container, "coolify": cv}
 }
 
 func (a *App) apiGitHub(w http.ResponseWriter, r *http.Request, user string) {
@@ -355,7 +453,18 @@ func (a *App) apiGitHubCheck(w http.ResponseWriter, r *http.Request, user string
 // apiGitHubUpdateServer lädt die neue Server-Version, prüft sie und startet neu.
 func (a *App) apiGitHubUpdateServer(w http.ResponseWriter, r *http.Request, user string) {
 	if a.container {
-		writeErr(w, 409, "Der Server läuft in Docker/Coolify – Server-Updates kommen automatisch über ein neues Image.")
+		gh.mu.Lock()
+		version := gh.ServerUpdate
+		gh.mu.Unlock()
+		if version == "" {
+			writeErr(w, 409, "Keine neuere Server-Version bekannt – bitte zuerst „Jetzt prüfen“.")
+			return
+		}
+		if err := a.triggerCoolify(version, user, r); err != nil {
+			writeErr(w, 502, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "version": version, "coolify": true})
 		return
 	}
 	s := a.settings()

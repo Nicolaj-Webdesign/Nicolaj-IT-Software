@@ -1508,31 +1508,30 @@ class SettingsView {
   }
   async drawGitHub() {
     const box = $('#gh', this.main);
-    if (!S.info) S.info = await api('GET', '/api/server-info').catch(() => null);
-    if (S.info?.container) {
-      box.innerHTML = `<div class="row" style="margin-bottom:6px"><h2>Updates über Coolify</h2><span class="spacer"></span><span class="pill ok">automatisch</span></div>
-        <p class="muted" style="margin:0">Der Server läuft als Docker-Container (Version <b>${esc(S.info.version)}</b>). Ein neuer Git-Tag baut über GitHub Actions ein neues Image, Coolify startet es automatisch – die PCs aktualisieren sich danach nach den Regeln oben (Testgeräte zuerst).</p>`;
-      return;
-    }
     let g;
     try { g = await api('GET', '/api/github'); } catch (e) { box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
-    const st = g.status;
+    const st = g.status, cf = g.coolify || {}, box2 = g.container;
     const statusLine = !g.repo ? '<span class="pill">nicht eingerichtet</span>'
       : st.error ? '<span class="pill danger">Fehler</span>'
       : st.tag ? '<span class="pill ok">verbunden</span>' : '<span class="pill">noch nicht geprüft</span>';
     box.innerHTML = `<div class="row" style="margin-bottom:6px"><h2>Neue Versionen per GitHub-Release</h2><span class="spacer"></span>${statusLine}</div>
-      <p class="muted" style="margin:0 0 14px">Tag pushen (z. B. <code>git tag v0.5.1 && git push origin v0.5.1</code>) – GitHub baut alles, der Server holt sich die neue Version stündlich oder sofort per „Jetzt prüfen“.</p>
+      <p class="muted" style="margin:0 0 14px">${box2
+        ? 'Tag pushen (z. B. <code>git tag v1.0.1 && git push origin v1.0.1</code>) – GitHub baut Image und Release. Der Server prüft stündlich (oder per „Jetzt prüfen“), lässt Coolify das neue Image starten und verteilt den neuen Agent.'
+        : 'Tag pushen (z. B. <code>git tag v1.0.1 && git push origin v1.0.1</code>) – GitHub baut alles, der Server holt sich die neue Version stündlich oder sofort per „Jetzt prüfen“.'}</p>
+      ${box2 ? (cf.configured
+        ? (cf.lastAt && cf.lastAt > '2000' ? `<div class="callout ${cf.lastOk ? 'accent' : 'danger'}" style="margin-bottom:14px">${icon(cf.lastOk ? 'check' : 'alert')}<div style="flex:1">Coolify (${esc(cf.lastVersion)}): ${esc(cf.lastResult)}<div class="small" style="margin-top:3px;opacity:.85">${esc(ago(cf.lastAt))}</div></div></div>` : '')
+        : `<div class="callout warn" style="margin-bottom:14px">${icon('info')}<div style="flex:1">Für automatische Server-Updates in Coolify die Umgebungsvariablen <code>NRMM_COOLIFY_WEBHOOK</code> und <code>NRMM_COOLIFY_TOKEN</code> setzen und neu deployen.</div></div>`) : ''}
       ${g.repo && (st.tag || st.error) ? `<div class="callout ${st.error ? 'danger' : 'accent'}" style="margin-bottom:14px">${icon(st.error ? 'alert' : 'check')}<div style="flex:1">
           ${st.error ? esc(st.error) : `Neuestes Release: <b>${esc(st.tag)}</b>${st.url ? ` · <a href="${esc(st.url)}" target="_blank" rel="noopener">ansehen</a>` : ''} · ${st.signed ? 'Signatur geprüft ✓' : 'ohne Release-Signatur'}`}
           <div class="small" style="margin-top:3px;opacity:.85">Zuletzt geprüft ${esc(ago(st.checkedAt))} · Server läuft mit Version ${esc(st.serverVersion)}</div></div></div>` : ''}
-      ${st.serverUpdate ? `<div class="callout warn" style="margin-bottom:14px">${icon('download')}<div style="flex:1">Server-Version <b>${esc(st.serverUpdate)}</b> ist verfügbar (du hast ${esc(st.serverVersion)}).</div><button class="btn sm primary" id="srvup">Server aktualisieren</button></div>` : ''}
+      ${st.serverUpdate ? `<div class="callout warn" style="margin-bottom:14px">${icon('download')}<div style="flex:1">Server-Version <b>${esc(st.serverUpdate)}</b> ist verfügbar (du hast ${esc(st.serverVersion)}).</div><button class="btn sm primary" id="srvup" ${box2 && !cf.configured ? 'disabled' : ''}>${box2 ? 'Über Coolify aktualisieren' : 'Server aktualisieren'}</button></div>` : ''}
       <form id="ghf" class="form-grid">
         <div class="form-grid two">
           <label class="field">Repository<input class="input mono" name="repo" value="${esc(g.repo)}" placeholder="nicolaj-webdesign/nicolaj-it-software"></label>
           <label class="field">Zugriffs-Token <span class="hint">nur bei privatem Repo</span><input class="input mono" name="token" type="password" autocomplete="off" placeholder="${g.hasToken ? '•••••••• gespeichert' : 'github_pat_…'}"></label>
         </div>
         <label class="field">Öffentlicher Release-Schlüssel <span class="hint">empfohlen – dann werden nur von dir signierte Releases übernommen</span><input class="input mono" name="pubKey" value="${esc(g.pubKey)}" placeholder="aus: go run ./tools/releasekey new"></label>
-        <label class="check"><input type="checkbox" name="auto" ${g.auto ? 'checked' : ''}> <span>Neue Agent-Versionen automatisch übernehmen<small>Danach greifen die Regeln oben: erst Testgeräte, dann „Für alle freigeben“.</small></span></label>
+        <label class="check"><input type="checkbox" name="auto" ${g.auto ? 'checked' : ''}> <span>${box2 ? 'Neue Versionen automatisch übernehmen' : 'Neue Agent-Versionen automatisch übernehmen'}<small>${box2 ? 'Server: Coolify startet das neue Image. ' : ''}Agent: danach greifen die Regeln oben – erst Testgeräte, dann „Für alle freigeben“.</small></span></label>
         <div class="row"><button class="btn primary">Speichern</button><button type="button" class="btn" id="ghcheck" ${g.repo ? '' : 'disabled'}>${icon('refresh')} Jetzt prüfen</button>
           ${g.hasToken ? '<button type="button" class="btn ghost" id="ghclear">Token löschen</button>' : ''}</div>
       </form>
@@ -1556,12 +1555,15 @@ class SettingsView {
     if (clr) clr.onclick = async () => { await api('POST', '/api/github/settings', { clearToken: true }); this.drawGitHub(); };
     const up = $('#srvup', box);
     if (up) up.onclick = async () => {
-      if (!await confirmModal(`Server auf ${esc(st.serverUpdate)} aktualisieren?`, 'Die neue Version wird von GitHub geladen und geprüft. Der Server startet danach neu – das dauert nur ein paar Sekunden. PCs verbinden sich automatisch wieder.', 'Aktualisieren')) return;
+      const text = box2
+        ? 'Coolify lädt das neue Image und startet den Server neu – das dauert etwa eine Minute. PCs verbinden sich automatisch wieder.'
+        : 'Die neue Version wird von GitHub geladen und geprüft. Der Server startet danach neu – das dauert nur ein paar Sekunden. PCs verbinden sich automatisch wieder.';
+      if (!await confirmModal(`Server auf ${esc(st.serverUpdate)} aktualisieren?`, text, 'Aktualisieren')) return;
       try {
         const r = await api('POST', '/api/github/update-server');
-        toast(`Server wird auf ${r.version} aktualisiert`, 'info', 'Neustart läuft, die Seite lädt gleich neu.', 8000);
-        setTimeout(() => location.reload(), 6000);
-      } catch (ex) { toast('Server-Update fehlgeschlagen', 'error', ex.message, 9000); }
+        toast(`Server wird auf ${r.version} aktualisiert`, 'info', r.coolify ? 'Coolify baut neu, die Seite lädt in einer Minute neu.' : 'Neustart läuft, die Seite lädt gleich neu.', 8000);
+        setTimeout(() => location.reload(), r.coolify ? 60000 : 6000);
+      } catch (ex) { toast('Server-Update fehlgeschlagen', 'error', ex.message, 9000); this.drawGitHub(); }
     };
   }
   async drawUpdates() {

@@ -1,6 +1,7 @@
 # Neues Release: git tag v1.0.1 && git push origin v1.0.1
-# → baut Agent + Server, signiert (falls eingerichtet), erstellt das GitHub-Release,
-#   baut das Docker-Image (ghcr.io/<org>/<repo>) und stößt Coolify an (falls eingerichtet).
+# Reihenfolge: bauen (+ signieren) → Docker-Image (ghcr.io/<org>/<repo>) → GitHub-Release.
+# Das Release erscheint erst, wenn das Image fertig ist – so kann der Server (oder Coolify)
+# direkt das neue Image holen.
 name: Release
 
 on:
@@ -12,7 +13,7 @@ permissions:
   packages: write
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest   # wegen der Windows-Code-Signatur; Go baut die Linux-Versionen trotzdem mit
     defaults:
       run:
@@ -95,15 +96,7 @@ jobs:
             echo "::warning::Kein RELEASE_SIGNING_KEY – Release wird ohne Signatur veröffentlicht."
           fi
 
-      - name: GitHub-Release erstellen
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "Nicolaj Fernwartung $VERSION" \
-            --generate-notes
-
-      - name: Dateien für das Docker-Image weitergeben
+      - name: Dateien weitergeben
         uses: actions/upload-artifact@v4
         with:
           name: dist
@@ -111,7 +104,7 @@ jobs:
 
   # ---------- Docker-Image für Coolify + automatisches Deployment ----------
   docker:
-    needs: release
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -148,15 +141,34 @@ jobs:
             ${{ env.IMAGE }}:${{ env.VERSION }}
             ${{ env.IMAGE }}:latest
 
-      # Coolify: Anwendung › Webhooks › „Deploy Webhook“ als Secret COOLIFY_WEBHOOK,
-      # Coolify › Keys & Tokens › API-Token als Secret COOLIFY_TOKEN.
-      - name: Coolify neu deployen
+  # ---------- GitHub-Release (erst wenn das Image fertig ist) ----------
+  release:
+    needs: [build, docker]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: GitHub-Release erstellen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Nicolaj Fernwartung ${GITHUB_REF_NAME#v}" \
+            --generate-notes
+
+      # Nur wenn Coolify aus dem Internet erreichbar ist. Ohne öffentliche IP leer lassen –
+      # dann stößt der Server Coolify selbst an (NRMM_COOLIFY_WEBHOOK/NRMM_COOLIFY_TOKEN).
+      - name: Coolify neu deployen (optional)
         env:
           COOLIFY_WEBHOOK: ${{ secrets.COOLIFY_WEBHOOK }}
           COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
         run: |
           if [ -z "$COOLIFY_WEBHOOK" ] || [ -z "$COOLIFY_TOKEN" ]; then
-            echo "::notice::COOLIFY_WEBHOOK/COOLIFY_TOKEN nicht gesetzt – Coolify wird nicht automatisch aktualisiert."
+            echo "Kein COOLIFY_WEBHOOK – der Server stößt Coolify selbst an."
             exit 0
           fi
           curl --fail --silent --show-error --request GET "$COOLIFY_WEBHOOK" --header "Authorization: Bearer $COOLIFY_TOKEN"

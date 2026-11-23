@@ -165,47 +165,74 @@ Die Datei `VERSION` gilt nur für lokale Builds – bei Releases zählt der Tag.
 
 ## Server auf Coolify (empfohlen für Oma & Tante)
 
-Mit Coolify läuft der Server im Internet mit echtem HTTPS-Zertifikat – und **aktualisiert sich selbst**:
-`git tag` → GitHub baut ein Docker-Image → Coolify startet es neu → die PCs ziehen nach (Testgeräte zuerst).
+Mit Coolify läuft der Server mit echtem HTTPS – und **aktualisiert sich selbst**:
+`git tag` → GitHub baut Docker-Image + Release → Coolify startet das neue Image → die PCs ziehen nach (Testgeräte zuerst).
 
-### Einmal einrichten
+Das Image heißt `ghcr.io/nicolaj-webdesign/nicolaj-it-software` und entsteht beim ersten Release (siehe oben).
 
-1. **DNS:** A-Eintrag `rmm.nicolaj-webdesign.de` → IP deines Coolify-Servers.
-2. **Erstes Release** veröffentlichen (siehe oben), damit das Image `ghcr.io/nicolaj-webdesign/nicolaj-it-software` existiert.
-3. **Coolify darf das private Image laden:** GitHub › Settings › Developer settings › *Tokens (classic)* → nur `read:packages`. Dann per SSH auf dem Coolify-Server:
-   ```sh
-   echo DEIN_TOKEN | docker login ghcr.io -u DEIN_GITHUB_NAME --password-stdin
+### Schritt 1: Coolify darf das private Image laden
+
+GitHub › Settings › Developer settings › *Tokens (classic)* → nur `read:packages`. Dann per SSH auf dem Coolify-Server:
+```sh
+echo DEIN_TOKEN | docker login ghcr.io -u DEIN_GITHUB_NAME --password-stdin
+```
+
+### Schritt 2: Von außen erreichbar machen
+
+**Ohne öffentliche IP (Server zu Hause, DS-Lite/CGNAT): Cloudflare Tunnel** – kostenlos, keine Portfreigabe.
+Voraussetzung: Die Domain liegt bei Cloudflare (Nameserver umstellen; Cloudflare übernimmt die bestehenden DNS-Einträge beim Umzug).
+
+1. Cloudflare › *Networking › Tunnels* › **Create tunnel** → Name vergeben → *Docker* wählen → nur den Token kopieren (beginnt mit `eyJ`).
+2. Coolify › Projekt › *+ New* › **Cloudflared** → Token als Umgebungsvariable eintragen → Deploy. Der Tunnel zeigt in Cloudflare dann „Healthy“.
+3. Im Tunnel › *Configure › Routes* › *Add route* › *Published application*:
+   Subdomain `rmm`, Domain `nicolaj-webdesign.de`, Service URL `http://localhost:80`.
+   (Gibt es für `rmm` schon einen DNS-Eintrag, diesen löschen – sonst legt Cloudflare den Tunnel-Eintrag nicht an.)
+
+**Mit öffentlicher IP:** einfach A-Eintrag `rmm.nicolaj-webdesign.de` → IP des Servers.
+
+### Schritt 3: Anwendung anlegen
+
+Coolify › Projekt › *+ New* › **Docker Image** → `ghcr.io/nicolaj-webdesign/nicolaj-it-software:latest`
+- **Ports Exposes:** `8080`
+- **Domain:** `https://rmm.nicolaj-webdesign.de`
+- Beim Tunnel: unter *Domains* „Redirect HTTP to HTTPS“ **ausschalten** (sonst Weiterleitungsschleife)
+- **Persistent Storage:** *Volume Mount*, Zielpfad `/data` (Datenbank, Konten, Geräte – **nicht vergessen**, sonst ist nach jedem Update alles weg)
+- **Environment Variables:**
+  ```
+  NRMM_PUBLIC_URL=https://rmm.nicolaj-webdesign.de
+  NRMM_CLOUDFLARE=1          # nur beim Cloudflare Tunnel
+  ```
+- **Deploy**. Den **Einrichtungscode** findest du im *Logs*-Tab → Konto anlegen → **sofort 2FA einrichten**.
+
+### Schritt 4: Automatische Updates
+
+**Ohne öffentliche IP** erreicht GitHub dein Coolify nicht. Deshalb schaut der Server selbst stündlich auf GitHub nach und stößt Coolify im Heimnetz an:
+
+1. Coolify › *Settings* › **API aktivieren**, dann *Keys & Tokens* › *API tokens* → neues Token.
+2. Anwendung › *Webhooks* › **Deploy Webhook** kopieren. Steht dort eine Adresse, die nur von außen geht, Host durch die Heimnetz-IP des Coolify-Servers ersetzen, z. B. `http://192.168.178.20:8000/api/v1/deploy?uuid=…&force=false`.
+3. In der Anwendung zwei weitere Umgebungsvariablen setzen und neu deployen:
    ```
-4. **In Coolify:** Projekt › *+ New* › *Docker Image* → `ghcr.io/nicolaj-webdesign/nicolaj-it-software:latest`
-   - **Ports Exposes:** `8080`
-   - **Domain:** `https://rmm.nicolaj-webdesign.de`
-   - **Environment Variables:** `NRMM_PUBLIC_URL=https://rmm.nicolaj-webdesign.de`
-   - **Persistent Storage:** *Volume Mount* mit Zielpfad `/data` (Datenbank, Konten, Geräte – **nicht vergessen**, sonst ist nach jedem Update alles weg)
-   - **Deploy** drücken.
-5. **Einrichtungscode** steht in den Logs der Anwendung (*Logs*-Tab). Dashboard öffnen, Konto anlegen, **sofort 2FA einrichten**.
+   NRMM_COOLIFY_WEBHOOK=<Deploy Webhook>
+   NRMM_COOLIFY_TOKEN=<API-Token>
+   ```
+4. Im Dashboard › *Einstellungen › Neue Versionen per GitHub-Release*: Repository `Nicolaj-Webdesign/Nicolaj-IT-Software`, Token (Fine-grained, nur dieses Repo, *Contents: Read-only*), „automatisch übernehmen“ an → **Jetzt prüfen**.
 
-### Automatisch aktualisieren
-
-6. Coolify › *Settings* › **API aktivieren**, dann *Keys & Tokens* › *API tokens* → neues Token (Deploy-Recht reicht).
-7. In der Anwendung › *Webhooks* › **Deploy Webhook** kopieren.
-8. GitHub-Repo › *Settings › Secrets and variables › Actions* → zwei Secrets:
-   - `COOLIFY_WEBHOOK` = die kopierte URL
-   - `COOLIFY_TOKEN` = das API-Token
+**Mit öffentlicher IP** geht es auch direkt aus GitHub: Repo › *Settings › Secrets and variables › Actions* → `COOLIFY_WEBHOOK` und `COOLIFY_TOKEN`. Dann startet Coolify sofort nach dem Release neu.
 
 Ab jetzt reicht für jede neue Version:
 ```sh
 git tag v1.0.1
 git push origin v1.0.1
 ```
-Release, Image, Coolify-Neustart und Agent-Verteilung laufen von allein. Der Container kennt keine „Server aktualisieren“-Taste – das macht Coolify.
+Release und Image baut GitHub (ca. 10 Minuten). Spätestens eine Stunde danach läuft der neue Server – sofort per „Jetzt prüfen“ bzw. „Über Coolify aktualisieren“. Danach bekommen die Testgeräte den neuen Agent.
 
 ### Gut zu wissen
 
-- Die Daten liegen im Volume `/data`. Coolify-Backups bzw. ein Volume-Backup einrichten.
-- Agents, die gegen den Heimnetz-Server installiert wurden, einmal **neu installieren** (neuer Installer aus dem Coolify-Dashboard) – die Serveradresse steckt im Agent.
-- Hinter Coolify gibt es kein eigenes Zertifikat mehr: Die Agents prüfen das normale Let's-Encrypt-Zertifikat.
-- Hängen Live-Bild oder Befehle: in Coolify unter *Advanced* „Gzip Compression“ ausschalten (Live-Verbindungen dürfen nicht gepuffert werden).
-- Eigener Server ohne Coolify? Gleiches Image, z. B.:
+- Die Daten liegen im Volume `/data`. Backup einrichten.
+- Agents, die gegen einen anderen Server installiert wurden, einmal **neu installieren** (Installer aus dem Coolify-Dashboard) – die Serveradresse steckt im Agent.
+- Hinter Coolify gibt es kein eigenes Zertifikat mehr: Die Agents prüfen das normale Zertifikat (Let's Encrypt bzw. Cloudflare).
+- Hängen Live-Bild oder Befehle: in Coolify unter *Advanced* „Gzip Compression“ ausschalten.
+- Eigener Server ohne Coolify? Gleiches Image:
   `docker run -d -p 8080:8080 -v nrmm:/data -e NRMM_PUBLIC_URL=https://rmm.example.de ghcr.io/nicolaj-webdesign/nicolaj-it-software` – davor ein Reverse-Proxy mit HTTPS.
 
 **Den Server nie ohne 2FA ins Internet stellen.** Wer das Dashboard übernimmt, kann alle PCs steuern.
@@ -220,6 +247,9 @@ Release, Image, Coolify-Neustart und Agent-Verteilung laufen von allein. Der Con
 | `NRMM_NO_TLS` | HTTPS macht der Proxy | `1` |
 | `NRMM_BEHIND_PROXY` | Client-IP aus `X-Forwarded-For`, sichere Cookies | `1` |
 | `NRMM_CONTAINER` | Updates per Image statt Selbst-Update | `1` |
+| `NRMM_CLOUDFLARE` | Besucher-IP aus `CF-Connecting-IP` (nur bei Cloudflare!) | – |
+| `NRMM_COOLIFY_WEBHOOK` | Deploy Webhook – Server stößt Coolify bei neuem Release an | – |
+| `NRMM_COOLIFY_TOKEN` | Coolify-API-Token dazu | – |
 
 ---
 
