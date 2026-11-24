@@ -120,6 +120,7 @@ func (a *App) agentChatPost(w http.ResponseWriter, r *http.Request, devID, role 
 		return
 	}
 	a.hub.Broadcast("chat", map[string]any{"deviceId": devID, "deviceName": devName, "message": chatView(msg)})
+	a.push("Nachricht von "+devName, text, "/admin/#/messages/"+devID, "chat-"+devID)
 	writeJSON(w, 200, chatView(msg))
 }
 

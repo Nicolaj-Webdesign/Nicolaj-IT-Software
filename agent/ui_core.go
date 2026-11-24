@@ -841,6 +841,11 @@ func (c *canvas) glow(gx, gy, rad float64, col rgba) {
 func (c *canvas) logo(x, y, size float64) {
 	c.rr(x, y, size, size, size*14/64, 0, pal.logoTile, false)
 	c.rr(x, y, size, size, size*14/64, 1, hexc("#ffffff14"), true)
+	c.logoMark(x, y, size)
+}
+
+// logoMark: nur „n“ und Cursor-Strich (ohne Kachel), Koordinaten wie bei logo.
+func (c *canvas) logoMark(x, y, size float64) {
 	k := size / 64
 	inN := func(u, v float64) bool { // u, v in Logo-Einheiten (0..64)
 		if u >= 15 && u <= 21 && v >= 24 && v <= 46 { // linker Strich

@@ -160,3 +160,13 @@ func (a *App) publicSite(w http.ResponseWriter, r *http.Request) {
 func (a *App) publicDownloadPage(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/#download", http.StatusFound)
 }
+
+// icon liefert die App-Symbole (nur bekannte Dateien).
+func (a *App) icon(w http.ResponseWriter, r *http.Request) {
+	switch name := r.PathValue("name"); name {
+	case "icon-192.png", "icon-512.png", "maskable-512.png", "apple-touch-icon.png", "badge-96.png":
+		a.static("web/icons/"+name, "image/png")(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}

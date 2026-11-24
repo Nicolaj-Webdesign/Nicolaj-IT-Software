@@ -570,3 +570,13 @@ tr.off td { opacity: .75; }
   .brand .wordmark { display: none; }
   .nav a { padding: 7px; }
 }
+
+/* App & Push (Einstellungen) */
+.ntf-block { padding: 14px 0; border-top: 1px solid var(--border); }
+.ntf-block:last-child { padding-bottom: 0; }
+.push-list { display: grid; margin: 12px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.push-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; }
+.push-row + .push-row { border-top: 1px solid var(--border); }
+.push-row > div { flex: 1; min-width: 0; }
+.push-row b { font-weight: 600; }
+.push-row .small { margin-top: 2px; }

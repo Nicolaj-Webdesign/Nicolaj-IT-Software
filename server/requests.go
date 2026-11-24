@@ -91,7 +91,8 @@ func (a *App) agentRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	a.limiter.Fail("request:" + ip) // zählt Anfragen pro Anschluss (ab 5 pro Stunde kurze Sperre)
 	a.broadcastDevice(devID)
-	a.hub.Broadcast("alert", map[string]any{"level": "info", "title": "Neue Zugangsanfrage",
+	a.push("Neue Zugangsanfrage", fmt.Sprintf("%s (%s) möchte freigeschaltet werden.", name, host), "/admin/#/", "request-"+devID)
+	a.hub.Broadcast("alert", map[string]any{"level": "info", "title": "Neue Zugangsanfrage", "tag": "request-" + devID,
 		"detail": fmt.Sprintf("%s (%s) möchte freigeschaltet werden.", name, host), "deviceId": devID})
 	writeJSON(w, 200, map[string]any{"deviceId": devID, "pcId": pcID, "agentToken": agentTok,
 		"screenToken": screenTok, "name": name, "pending": true})

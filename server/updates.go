@@ -27,6 +27,8 @@ type Settings struct {
 	ReleasePubKey string `json:"releasePubKey,omitempty"` // Ed25519, verlangt signierte Releases
 
 	DisableRequests bool `json:"disableRequests,omitempty"` // allgemeiner Installer: keine Zugangsanfragen annehmen
+
+	VapidKey string `json:"vapidKey,omitempty"` // Web-Push-Schlüssel (PKCS#8, base64url)
 }
 
 // AgentPkg ist eine Agent-Version, die der Server an die PCs verteilt.

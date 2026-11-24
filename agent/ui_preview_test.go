@@ -205,3 +205,50 @@ func TestIconPNGs(t *testing.T) {
 		f.Close()
 	}
 }
+
+// App-Symbole fürs Dashboard (PWA): NRMM_WEB_ICONS=/pfad go test ./agent -run TestWebIcons
+func TestWebIcons(t *testing.T) {
+	dir := os.Getenv("NRMM_WEB_ICONS")
+	if dir == "" {
+		t.Skip("NRMM_WEB_ICONS nicht gesetzt")
+	}
+	save := func(name string, c *canvas) {
+		img := image.NewNRGBA(image.Rect(0, 0, c.W, c.H))
+		for i := 0; i < c.W*c.H; i++ {
+			b, g, r, a := c.Pix[i*4], c.Pix[i*4+1], c.Pix[i*4+2], c.Pix[i*4+3]
+			if a > 0 {
+				r, g, b = uint8(int(r)*255/int(a)), uint8(int(g)*255/int(a)), uint8(int(b)*255/int(a))
+			}
+			img.SetNRGBA(i%c.W, i/c.W, color.NRGBA{r, g, b, a})
+		}
+		f, err := os.Create(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		png.Encode(f, img)
+		f.Close()
+	}
+	for _, px := range []int{192, 512} { // normales Symbol (abgerundete Kachel)
+		c := newCanvas(px, px, float64(px)/64)
+		c.logo(0, 0, 64)
+		save(fmt.Sprintf("icon-%d.png", px), c)
+	}
+	for name, px := range map[string]int{"maskable-512.png": 512, "apple-touch-icon.png": 180} { // randlos, Logo im sicheren Bereich
+		c := newCanvas(px, px, float64(px)/64)
+		c.rr(0, 0, 64, 64, 0, 0, pal.logoTile, false)
+		c.logoMark(8, 8, 48)
+		save(name, c)
+	}
+	// Android-Benachrichtigungssymbol: nur weiße Form auf transparent
+	c := newCanvas(96, 96, 96.0/64)
+	c.logo(0, 0, 64)
+	for i := 0; i < 96*96; i++ {
+		lum := int(c.Pix[i*4]) + int(c.Pix[i*4+1]) + int(c.Pix[i*4+2])
+		a := uint8(0)
+		if lum > 3*150 || (c.Pix[i*4] > 180 && c.Pix[i*4+2] < 140) { // „n“ (weiß) und Strich (blau)
+			a = 255
+		}
+		c.Pix[i*4], c.Pix[i*4+1], c.Pix[i*4+2], c.Pix[i*4+3] = a, a, a, a
+	}
+	save("badge-96.png", c)
+}

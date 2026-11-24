@@ -273,12 +273,15 @@ async function startApp() {
         <a href="#/settings" data-nav="settings">${icon('sliders', 18)}<span>Einstellungen</span></a>
       </nav>
       <div class="side-foot"><div class="who"><b>${esc(S.me.username)}</b><span>Administrator</span></div>
+        <button class="icon-btn" id="installapp" title="Als App installieren" aria-label="Als App installieren" hidden>${icon('download', 18)}</button>
         <button class="icon-btn" id="logout" title="Abmelden">${icon('logout', 18)}</button></div>
     </aside>
     <main class="main" id="main"></main></div>
     <div class="conn-banner" id="connbanner" hidden>Verbindung zum Server unterbrochen …</div>`;
   $('#logout').onclick = async () => { await api('POST', '/api/logout').catch(() => {}); S.me = null; renderLogin(); };
   $('#psearch').onclick = () => openPalette();
+  $('#installapp').onclick = () => installApp();
+  showInstall();
   if (!S.paletteKey) {
     S.paletteKey = true;
     document.addEventListener('keydown', (e) => {
@@ -291,6 +294,7 @@ async function startApp() {
   connectEvents();
   window.onhashchange = route;
   route();
+  syncPush();
 }
 
 async function loadDevices() {
@@ -313,6 +317,7 @@ function updateCount() {
     sc.textContent = bad ? `${bad} ⚠` : '';
     sc.classList.toggle('alarm', bad > 0);
   }
+  updateBadge();
 }
 
 function connectEvents() {
@@ -366,7 +371,7 @@ function connectEvents() {
   es.addEventListener('alert', (e) => {
     const a = JSON.parse(e.data);
     toast(a.title, a.level === 'info' ? 'info' : 'error', a.detail, a.level === 'info' ? 9000 : 15000);
-    notifyDesktop(a.title, a.detail || '', a.deviceId ? `#/d/${a.deviceId}/overview` : '#/');
+    notifyDesktop(a.title, a.detail || '', a.deviceId ? `#/d/${a.deviceId}/overview` : '#/', a.tag);
     S.view?.onAlert?.(a);
   });
   es.addEventListener('screen', (e) => {
@@ -681,6 +686,7 @@ function updateChatCount() {
   el.textContent = n ? `${n} neu` : '';
   el.classList.toggle('fresh', n > 0);
   document.title = (n ? `(${n}) ` : '') + 'Nicolaj Fernwartung';
+  updateBadge();
 }
 function onChatEvent(m) {
   const msg = m.message;
@@ -691,7 +697,7 @@ function onChatEvent(m) {
   if (msg.from === 'pc' && !viewing) {
     c.unread = (c.unread || 0) + 1;
     toast(`Nachricht von ${c.name}`, 'info', msg.text.slice(0, 160), 9000);
-    notifyDesktop(`Nachricht von ${c.name}`, msg.text, `#/messages/${m.deviceId}`);
+    notifyDesktop(`Nachricht von ${c.name}`, msg.text, `#/messages/${m.deviceId}`, `chat-${m.deviceId}`);
   }
   S.chats.set(m.deviceId, c);
   updateChatCount();
@@ -700,12 +706,90 @@ function onChatEvent(m) {
 
 // Desktop-Benachrichtigungen (pro Browser, siehe Einstellungen)
 function notifyOn() { try { return localStorage.getItem('nrmm-notify') === '1' && 'Notification' in window && Notification.permission === 'granted'; } catch { return false; } }
-function notifyDesktop(title, body, href) {
+function notifyDesktop(title, body, href, tag) {
   if (!notifyOn() || !document.hidden) return;
+  if (pushActive() && /^(chat|request|sec)-/.test(tag || '')) return; // kommt schon per Push
+  const opts = { body: (body || '').slice(0, 200), icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', tag: tag || href, data: { href: '/admin/' + href } };
+  if (PWA.reg) { PWA.reg.showNotification(title, opts).catch(() => {}); return; } // Android geht nur so
   try {
-    const n = new Notification(title, { body: body.slice(0, 200), icon: '/favicon.svg', tag: href });
+    const n = new Notification(title, opts);
     n.onclick = () => { window.focus(); location.hash = href; n.close(); };
   } catch { /* nicht verfügbar */ }
+}
+
+// ---------- App (PWA) & Push ----------
+const PWA = { reg: null, evt: null };
+function isStandalone() { return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true; }
+function isIOS() { return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function pushSupported() { return window.isSecureContext && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window; }
+function pushActive() { try { return localStorage.getItem('nrmm-push') === '1'; } catch { return false; } }
+function setFlag(k, on) { try { localStorage.setItem(k, on ? '1' : '0'); } catch { /* privat */ } }
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const os = /iPad/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ? 'iPad' : /iPhone/.test(ua) ? 'iPhone'
+    : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Gerät';
+  const br = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+  return `${os} · ${br}${isStandalone() ? ' (App)' : ''}`;
+}
+function b64u(s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(s + '='.repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0));
+}
+function sameKey(buf, key) {
+  if (!buf) return false;
+  const a = new Uint8Array(buf);
+  return a.length === key.length && a.every((v, i) => v === key[i]);
+}
+function updateBadge() {
+  if (!('setAppBadge' in navigator)) return;
+  const unread = [...S.chats.values()].reduce((a, c) => a + (c.unread || 0), 0);
+  const pend = [...S.devices.values()].filter((d) => d.pending).length;
+  const n = unread + pend;
+  (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {});
+}
+function showInstall() {
+  const b = $('#installapp');
+  if (b) b.hidden = !PWA.evt || isStandalone();
+}
+async function installApp() {
+  if (!PWA.evt) { location.hash = '#/settings'; return; }
+  const e = PWA.evt;
+  PWA.evt = null;
+  showInstall();
+  e.prompt();
+  await e.userChoice.catch(() => null);
+}
+async function pushSubscribe(publicKey) {
+  if ((await Notification.requestPermission()) !== 'granted') throw new Error('Der Browser hat Benachrichtigungen abgelehnt. Über das Schloss-Symbol in der Adresszeile kannst du sie wieder erlauben.');
+  const reg = PWA.reg || await navigator.serviceWorker.ready;
+  const key = b64u(publicKey);
+  let s = await reg.pushManager.getSubscription();
+  if (s && !sameKey(s.options?.applicationServerKey, key)) { await s.unsubscribe(); s = null; } // Server-Schlüssel hat sich geändert
+  if (!s) s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  await api('POST', '/api/push/subscribe', { ...s.toJSON(), label: deviceLabel() });
+  setFlag('nrmm-push', true);
+  setFlag('nrmm-notify', true);
+}
+async function syncPush() { // Abo beim Start auffrischen (Browser tauschen es manchmal aus)
+  if (!pushSupported() || !pushActive() || !PWA.reg) return;
+  try {
+    const s = await PWA.reg.pushManager.getSubscription();
+    if (!s) { setFlag('nrmm-push', false); return; }
+    await api('POST', '/api/push/subscribe', { ...s.toJSON(), label: deviceLabel() });
+  } catch { /* später erneut */ }
+}
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); PWA.evt = e; showInstall(); S.view?.onInstall?.(); });
+window.addEventListener('appinstalled', () => {
+  PWA.evt = null; showInstall(); S.view?.onInstall?.();
+  toast('App installiert', 'ok', 'Du findest „Fernwartung“ jetzt im Startmenü bzw. auf dem Home-Bildschirm.', 7000);
+});
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/admin/sw.js', { scope: '/admin/' }).then((r) => { PWA.reg = r; }).catch(() => {});
+  navigator.serviceWorker.addEventListener('message', (e) => { // Klick auf eine Benachrichtigung
+    if (e.data?.type !== 'open' || !e.data.href) return;
+    const u = new URL(e.data.href, location.origin);
+    if (u.origin === location.origin) location.hash = u.hash || '#/';
+  });
 }
 
 function chatBubbles(msgs) {
@@ -1973,21 +2057,86 @@ class SettingsView {
     this.drawServer();
     this.drawCodes();
   }
-  drawNotify() {
+  async drawNotify() {
     const box = $('#ntf', this.main);
-    const supported = 'Notification' in window;
-    const perm = supported ? Notification.permission : 'denied';
-    box.innerHTML = `<h2 style="margin-bottom:6px">Desktop-Benachrichtigungen</h2>
-      <p class="muted" style="margin:0 0 14px">Neue Nachrichten, Zugangsanfragen und Sicherheitsalarme melden sich als Windows- bzw. Handy-Benachrichtigung – auch wenn das Dashboard im Hintergrund offen ist. Gilt nur für diesen Browser.</p>
-      <label class="check"><input type="checkbox" id="nten" ${notifyOn() ? 'checked' : ''} ${supported ? '' : 'disabled'}> <span>Benachrichtigungen in diesem Browser<small>${!supported ? 'Dieser Browser unterstützt das nicht.' : perm === 'denied' ? 'Im Browser blockiert – über das Schloss-Symbol in der Adresszeile wieder erlauben.' : 'Der Browser fragt einmal nach der Erlaubnis.'}</small></span></label>`;
-    $('#nten', box).onchange = async (e) => {
+    if (!box) return;
+    this.onInstall = () => this.drawNotify();
+    const standalone = isStandalone(), ios = isIOS(), canPush = pushSupported();
+    const info = canPush ? await api('GET', '/api/push').catch(() => null) : null;
+    const reg = canPush ? (PWA.reg || await navigator.serviceWorker.getRegistration('/admin/').catch(() => null)) : null;
+    const sub = reg ? await reg.pushManager.getSubscription().catch(() => null) : null;
+    const mine = sub && info ? info.subscriptions.find((x) => x.endpoint === sub.endpoint) : null;
+    const perm = 'Notification' in window ? Notification.permission : 'denied';
+
+    const app = standalone
+      ? `<div class="callout accent">${icon('check')}<div style="flex:1">Du nutzt gerade die App.</div></div>`
+      : PWA.evt
+        ? `<div class="row"><button class="btn primary" id="appinst" type="button">${icon('download')} Als App installieren</button><span class="small muted">Eigenes Fenster, Symbol in Taskleiste und Startmenü.</span></div>`
+        : !window.isSecureContext
+          ? `<p class="small" style="color:var(--warn);margin:0">Installieren und Push gehen nur über HTTPS – öffne das Dashboard über deine https-Adresse.</p>`
+          : ios
+            ? `<p class="small muted" style="margin:0">iPhone/iPad: in Safari unten auf <b>Teilen</b> tippen › <b>Zum Home-Bildschirm</b>. Danach die App öffnen und hier Push einschalten.</p>`
+            : `<p class="small muted" style="margin:0">Chrome/Edge: in der Adresszeile rechts auf das Installieren-Symbol klicken, oder Menü ⋯ › <b>Apps</b> › <b>Fernwartung installieren</b>. Android: Menü ⋮ › <b>App installieren</b>.</p>`;
+
+    let push;
+    if (canPush && info) {
+      const list = info.subscriptions;
+      push = `<label class="check"><input type="checkbox" id="pushen" ${mine ? 'checked' : ''}> <span>Push auf diesem Gerät (${esc(deviceLabel())})<small>${perm === 'denied' ? 'Im Browser blockiert – über das Schloss-Symbol in der Adresszeile wieder erlauben.' : 'Kommt auch an, wenn die App oder der Browser zu ist. Der Browser fragt einmal nach der Erlaubnis.'}</small></span></label>
+        ${list.length ? `<div class="push-list">${list.map((x) => `<div class="push-row"><div><b>${esc(x.label)}</b>${x === mine ? ' <span class="pill accent">dieses Gerät</span>' : ''}
+            <div class="small faint">${x.lastOk && x.lastOk > '2000' ? 'zuletzt zugestellt ' + esc(ago(x.lastOk)) : 'angemeldet ' + esc(ago(x.created))}</div></div>
+            <button class="icon-btn" data-del="${esc(x.id)}" title="Abmelden" aria-label="${esc(x.label)} abmelden">${icon('trash', 16)}</button></div>`).join('')}</div>
+          <div class="row"><button class="btn" id="pushtest" type="button">${icon('send')} Test senden</button></div>` : ''}`;
+    } else {
+      push = `<p class="small muted" style="margin:0 0 10px">${ios && !standalone ? 'Push gibt es auf dem iPhone nur in der App vom Home-Bildschirm.' : !window.isSecureContext ? 'Push geht nur über HTTPS.' : 'Dieser Browser unterstützt kein Push.'} Solange das Dashboard offen ist, kannst du trotzdem Benachrichtigungen bekommen:</p>
+        <label class="check"><input type="checkbox" id="nten" ${notifyOn() ? 'checked' : ''} ${'Notification' in window ? '' : 'disabled'}> <span>Benachrichtigungen bei offenem Dashboard<small>${perm === 'denied' ? 'Im Browser blockiert.' : 'Auch wenn der Tab im Hintergrund ist.'}</small></span></label>`;
+    }
+
+    box.innerHTML = `<h2 style="margin-bottom:6px">App &amp; Benachrichtigungen</h2>
+      <p class="muted" style="margin:0 0 14px">Das Dashboard lässt sich wie ein Programm installieren – am PC und auf dem Handy. Neue Nachrichten, Zugangsanfragen und Sicherheitsalarme kommen dann als Benachrichtigung, und das App-Symbol zeigt an, wie viel offen ist.</p>
+      <div class="ntf-block">${app}</div>
+      <div class="ntf-block">${push}</div>`;
+
+    const inst = $('#appinst', box);
+    if (inst) inst.onclick = () => installApp();
+    const en = $('#pushen', box);
+    if (en) en.onchange = async () => {
+      en.disabled = true;
       try {
-        if (e.target.checked) {
-          const p = await Notification.requestPermission();
-          if (p !== 'granted') { e.target.checked = false; toast('Nicht erlaubt', 'error', 'Der Browser hat Benachrichtigungen abgelehnt.'); return; }
-          localStorage.setItem('nrmm-notify', '1');
-          new Notification('Benachrichtigungen sind an', { body: 'So sieht es aus, wenn dir jemand schreibt.', icon: '/favicon.svg' });
-        } else localStorage.setItem('nrmm-notify', '0');
+        if (en.checked) { await pushSubscribe(info.publicKey); toast('Push ist an', 'ok', 'Mit „Test senden“ kannst du es ausprobieren.'); }
+        else {
+          if (mine) await api('DELETE', `/api/push/${mine.id}`).catch(() => {});
+          if (sub) await sub.unsubscribe().catch(() => {});
+          setFlag('nrmm-push', false); setFlag('nrmm-notify', false);
+          toast('Push ist aus', 'ok');
+        }
+      } catch (ex) { toast('Hat nicht geklappt', 'error', ex.message, 8000); }
+      this.drawNotify();
+    };
+    $$('[data-del]', box).forEach((b) => b.onclick = async () => {
+      try {
+        await api('DELETE', `/api/push/${b.dataset.del}`);
+        if (mine && b.dataset.del === mine.id) { if (sub) await sub.unsubscribe().catch(() => {}); setFlag('nrmm-push', false); }
+      } catch (ex) { toast('Fehler', 'error', ex.message); }
+      this.drawNotify();
+    });
+    const t = $('#pushtest', box);
+    if (t) t.onclick = async () => {
+      t.disabled = true; t.innerHTML = '<span class="spin"></span> Sende …';
+      try {
+        const res = await api('POST', '/api/push/test');
+        const bad = res.filter((x) => !x.ok);
+        if (!bad.length) toast('Test gesendet', 'ok', `An ${res.length} ${res.length === 1 ? 'Gerät' : 'Geräte'} – sollte gleich aufpoppen.`);
+        else toast('Nicht überall angekommen', 'error', bad.map((x) => `${x.label}: ${x.error}`).join('\n').slice(0, 300), 10000);
+      } catch (ex) { toast('Fehler', 'error', ex.message); }
+      this.drawNotify();
+    };
+    const nt = $('#nten', box);
+    if (nt) nt.onchange = async () => {
+      try {
+        if (nt.checked) {
+          if ((await Notification.requestPermission()) !== 'granted') { toast('Nicht erlaubt', 'error', 'Der Browser hat Benachrichtigungen abgelehnt.'); nt.checked = false; return; }
+          setFlag('nrmm-notify', true);
+        } else setFlag('nrmm-notify', false);
       } catch (ex) { toast('Fehler', 'error', ex.message); }
       this.drawNotify();
     };

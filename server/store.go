@@ -114,6 +114,7 @@ type DBData struct {
 	Rejected    map[string]time.Time  `json:"rejected,omitempty"` // abgelehnte Anfragen: Agent entfernt sich beim nächsten Kontakt
 	Scripts     []*Script             `json:"scripts,omitempty"`  // gespeicherte PowerShell-Skripte
 	Chats       map[string][]*ChatMsg `json:"chats,omitempty"`    // Nachrichten pro Gerät
+	PushSubs    []*PushSub            `json:"pushSubs,omitempty"` // Geräte für Push-Benachrichtigungen
 }
 
 type ChatMsg struct {

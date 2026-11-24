@@ -368,7 +368,8 @@ func (a *App) checkSecurityAlerts(r *http.Request, devID, name string, oldInv, n
 		a.store.Update(func(d *DBData) {
 			d.Audit = append(d.Audit, &AuditEntry{Time: time.Now(), User: "Sicherheit", IP: clientIP(r), DeviceID: devID, Action: title, Detail: detail})
 		})
-		a.hub.Broadcast("alert", map[string]any{"deviceId": devID, "name": name, "level": "danger", "title": title, "detail": detail})
+		a.hub.Broadcast("alert", map[string]any{"deviceId": devID, "name": name, "level": "danger", "title": title, "detail": detail, "tag": "sec-" + devID})
+		a.push(title, name+": "+detail, "/admin/#/d/"+devID+"/security", "sec-"+devID)
 	}
 	if nw.ActiveThreats > 0 && (!hadOld || nw.ActiveThreats > od.ActiveThreats) {
 		alert("Bedrohung erkannt", fmt.Sprintf("%s: %d aktive Bedrohung(en). Bitte unter Sicherheit prüfen.", name, nw.ActiveThreats))

@@ -20,7 +20,8 @@ Eigene Fernwartungs-Software (RMM) für Nicolaj Webdesign – wie NinjaOne, Intu
 - **Gruppen** (z. B. Familie, Kunden), **Übersicht** (online, offline, braucht Aufmerksamkeit, Agent veraltet), **Mehrfachauswahl**: Nachricht, Software, Skript, Neustart an viele PCs auf einmal
 - **Schnellsuche** mit `Strg + K` und **gespeicherte Skripte** (einmal schreiben, überall ausführen)
 - **Nachrichten**: Am PC über das **n-Symbol unten rechts** oder Startmenü › **„Nachricht an Nicolaj“** schreiben. Du antwortest im Dashboard unter **Nachrichten**, am PC geht das Fenster mit deiner Antwort von selbst auf. Mit „gelesen“-Anzeige auf beiden Seiten.
-- **Desktop-Benachrichtigungen** im Browser bei neuen Nachrichten, Zugangsanfragen und Alarmen
+- **Dashboard als App** für PC und Handy: eigenes Fenster, Symbol in Taskleiste/Startmenü bzw. auf dem Home-Bildschirm, Zähler auf dem Symbol
+- **Push-Benachrichtigungen** bei neuen Nachrichten, Zugangsanfragen und Sicherheitsalarmen – kommen auch an, wenn App und Browser zu sind
 - **Warnung bei fast vollem Speicher** (unter 10 % oder 5 GB frei) – zählt zu „Brauchen Aufmerksamkeit“
 - **Fenster am PC im Nicolaj-Look**: Installer, Bildschirm-Abfrage, Nachrichten, PC-ID und Verbindungsleiste – dunkel, mit Logo, wie man es von Discord oder Steam kennt
 
@@ -49,6 +50,14 @@ Alle Daten liegen im Ordner `data/` neben dem Programm.
 
 Adresse mit `/admin` am Ende im Browser öffnen (z. B. `https://192.168.178.20:8443/admin`). Die Zertifikatswarnung ist beim ersten Mal normal (eigenes Zertifikat) → „Erweitert“ → „Weiter“.
 Einrichtungscode eingeben, Konto anlegen. **Danach gleich unter Einstellungen die Zwei-Faktor-Anmeldung einschalten.**
+
+**Als App installieren** (geht nur über HTTPS mit echtem Zertifikat, also z. B. über Coolify):
+
+- **Windows (Edge/Chrome):** In der Adresszeile rechts auf das Installieren-Symbol klicken – oder im Dashboard unten links auf ⤓. Danach liegt „Fernwartung“ im Startmenü und lässt sich an die Taskleiste anheften.
+- **Android (Chrome):** Menü ⋮ › „App installieren“.
+- **iPhone/iPad (Safari):** Teilen › „Zum Home-Bildschirm“. Push gibt es auf dem iPhone nur so (ab iOS 16.4).
+
+Dann in der App unter **Einstellungen › App & Benachrichtigungen** „Push auf diesem Gerät“ einschalten und „Test senden“ drücken. Das geht pro Gerät (PC, Handy, Tablet – bis zu 20).
 
 ### 3. PC hinzufügen
 
@@ -302,6 +311,7 @@ agent/    Agent für Windows (Go, Win32 direkt über syscall)
 - Jeder PC hat zwei Schlüssel: einen für den Dienst (nur SYSTEM/Admins lesbar) und einen eingeschränkten für den Bildschirm-Helfer.
 - Passwörter für Benutzer werden nur durchgereicht, nie gespeichert. Auf dem PC gelangen Eingaben nur über Umgebungsvariablen in PowerShell, nie als Befehlstext.
 - Dashboard: Login mit PBKDF2-Passwort-Hash, optional TOTP (2FA), Schutz vor Brute-Force und CSRF, strenge Content-Security-Policy.
+- App/Push: Web-App-Manifest und Service Worker (`server/web/sw.js`, speichert nie API-Daten). Push nach Web-Push-Standard (RFC 8291/8292) ohne fremde Dienste oder Bibliotheken: Der Server erzeugt beim ersten Start seinen VAPID-Schlüssel und verschlüsselt jede Nachricht Ende-zu-Ende für das jeweilige Gerät; zugestellt wird nur an die bekannten Push-Dienste von Google, Mozilla, Microsoft und Apple.
 
 ### Ideen für die nächsten Versionen
 
