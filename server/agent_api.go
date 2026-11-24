@@ -110,6 +110,9 @@ func (a *App) agentEvents(w http.ResponseWriter, r *http.Request, devID, role st
 		a.sendQueued(devID)
 		a.pushUpdates(devID)
 	}
+	if role == "screen" {
+		a.pushUnreadChat(devID, conn)
+	}
 	defer func() {
 		if a.hub.UnregisterAgent(devID, role, conn) {
 			a.hub.Broadcast("screen", map[string]any{"deviceId": devID, "session": nil, "reason": "Der Bildschirm-Helfer hat die Verbindung verloren."})
@@ -451,6 +454,7 @@ func (a *App) agentGoodbye(w http.ResponseWriter, r *http.Request, devID, role s
 		if dev := d.Devices[devID]; dev != nil {
 			name = dev.Name
 			delete(d.Devices, devID)
+			delete(d.Chats, devID)
 			d.Audit = append(d.Audit, &AuditEntry{Time: time.Now(), User: "PC", IP: clientIP(r), DeviceID: devID,
 				Action: "Agent deinstalliert", Detail: "Der Agent wurde auf „" + name + "“ entfernt."})
 		}

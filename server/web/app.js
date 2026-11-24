@@ -26,6 +26,7 @@ const ICONS = {
   shield: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   message: '<path d="M4 5h16v11H9l-5 4z"/>',
+  send: '<path d="M4 12 20 4l-4 16-4-6.5z"/><path d="m12 13.5 8-9.5"/>',
   folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
@@ -266,6 +267,7 @@ async function startApp() {
       <button type="button" class="side-search" id="psearch">${icon('search', 16)}<span>Suchen</span><kbd>Strg K</kbd></button>
       <nav class="nav">
         <a href="#/" data-nav="devices">${icon('monitor', 18)}<span>Geräte</span><em class="count" id="devcount"></em></a>
+        <a href="#/messages" data-nav="messages">${icon('message', 18)}<span>Nachrichten</span><em class="count" id="chatcount"></em></a>
         <a href="#/security" data-nav="security">${icon('shield', 18)}<span>Sicherheit</span><em class="count" id="seccount"></em></a>
         <a href="#/audit" data-nav="audit">${icon('history', 18)}<span>Protokoll</span></a>
         <a href="#/settings" data-nav="settings">${icon('sliders', 18)}<span>Einstellungen</span></a>
@@ -284,6 +286,7 @@ async function startApp() {
     });
   }
   await loadDevices();
+  await loadChats();
   S.info = await api('GET', '/api/server-info').catch(() => null);
   connectEvents();
   window.onhashchange = route;
@@ -319,7 +322,7 @@ function connectEvents() {
   let first = true;
   es.addEventListener('hello', async () => {
     $('#connbanner').hidden = true;
-    if (!first) { await loadDevices().catch(() => {}); S.view?.onReconnect?.(); }
+    if (!first) { await loadDevices().catch(() => {}); await loadChats(); S.view?.onReconnect?.(); }
     first = false;
   });
   es.onerror = async () => {
@@ -333,6 +336,15 @@ function connectEvents() {
     updateCount();
     if (isNew) S.onEnroll?.(d);
     S.view?.onDevice?.(d);
+  });
+  es.addEventListener('chat', (e) => {
+    const m = JSON.parse(e.data);
+    onChatEvent(m);
+  });
+  es.addEventListener('chat-read', (e) => {
+    const m = JSON.parse(e.data);
+    if (m.by === 'admin') { const c = S.chats.get(m.deviceId); if (c) { c.unread = 0; updateChatCount(); } }
+    S.view?.onChatRead?.(m);
   });
   es.addEventListener('device-removed', (e) => {
     const { id } = JSON.parse(e.data);
@@ -354,6 +366,7 @@ function connectEvents() {
   es.addEventListener('alert', (e) => {
     const a = JSON.parse(e.data);
     toast(a.title, a.level === 'info' ? 'info' : 'error', a.detail, a.level === 'info' ? 9000 : 15000);
+    notifyDesktop(a.title, a.detail || '', a.deviceId ? `#/d/${a.deviceId}/overview` : '#/');
     S.view?.onAlert?.(a);
   });
   es.addEventListener('screen', (e) => {
@@ -390,6 +403,7 @@ function route() {
   else if (parts[0] === 'audit') { S.view = new AuditView(); nav = 'audit'; }
   else if (parts[0] === 'security') { S.view = new SecurityView(); nav = 'security'; }
   else if (parts[0] === 'settings') { S.view = new SettingsView(); nav = 'settings'; }
+  else if (parts[0] === 'messages') { S.view = new MessagesView(parts[1] || ''); nav = 'messages'; }
   else S.view = new DevicesView();
   $$('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === nav));
   S.view.render(main);
@@ -403,6 +417,11 @@ document.addEventListener('click', (e) => {
 
 // ---------- Gemeinsame Darstellung ----------
 function inv(d) { return d?.inventory || {}; }
+// lowDisk: Laufwerk mit weniger als 10 % (bzw. 5 GB) frei – oder ''.
+function lowDisk(d) {
+  const k = (inv(d).disks || []).find((x) => x.sizeGB > 0 && (x.freeGB / x.sizeGB < 0.1 || x.freeGB < 5));
+  return k ? k.name : '';
+}
 function osShort(d) { return (inv(d).os || '').replace(/^Microsoft\s+/, '') || 'Windows'; }
 function loggedUser(d) {
   const u = inv(d).loggedOnUser;
@@ -437,7 +456,7 @@ class DevicesView {
   destroy() { clearInterval(this.timer); }
   attention(d) {
     if (d.securityEnabled && secState(d).level === 'danger') return true;
-    if (inv(d).rebootPending) return true;
+    if (inv(d).rebootPending || lowDisk(d)) return true;
     return !d.online && d.lastSeen && Date.now() - new Date(d.lastSeen) > 7 * 864e5;
   }
   draw() {
@@ -528,7 +547,7 @@ class DevicesView {
           <dt>Benutzer</dt><dd>${esc(loggedUser(d))}</dd>
           <dt>${d.online ? 'IP' : 'Zuletzt'}</dt><dd>${d.online ? esc((inv(d).ips || [])[0] || d.lastIp || '–') : esc(ago(d.lastSeen))}</dd>
           ${d.securityEnabled ? `<dt>Schutz</dt><dd>${secBadge(d)}</dd>` : ''}
-          ${inv(d).rebootPending ? '<dt>Hinweis</dt><dd><span class="badge warn">Neustart nötig</span></dd>' : ''}
+          ${inv(d).rebootPending || lowDisk(d) ? `<dt>Hinweis</dt><dd>${inv(d).rebootPending ? '<span class="badge warn">Neustart nötig</span> ' : ''}${lowDisk(d) ? `<span class="badge warn">Speicher fast voll (${esc(lowDisk(d))})</span>` : ''}</dd>` : ''}
         </dl>
         ${this.selecting ? '' : `<div class="foot"><button class="btn sm" data-go="overview">Öffnen</button>
           <button class="btn sm ${d.screenOnline ? 'primary' : ''}" data-go="screen" ${d.screenOnline ? '' : 'disabled'}>${icon('eye', 15)} Bildschirm</button></div>`}
@@ -645,6 +664,174 @@ function openPalette() {
   q.oninput = () => { idx = 0; draw(); };
   draw();
   q.focus();
+}
+
+// ---------- Nachrichten ----------
+S.chats = new Map();
+async function loadChats() {
+  const list = await api('GET', '/api/chats').catch(() => null);
+  if (!list) return;
+  S.chats = new Map(list.map((c) => [c.deviceId, c]));
+  updateChatCount();
+}
+function updateChatCount() {
+  const el = $('#chatcount');
+  if (!el) return;
+  const n = [...S.chats.values()].reduce((a, c) => a + (c.unread || 0), 0);
+  el.textContent = n ? `${n} neu` : '';
+  el.classList.toggle('fresh', n > 0);
+  document.title = (n ? `(${n}) ` : '') + 'Nicolaj Fernwartung';
+}
+function onChatEvent(m) {
+  const msg = m.message;
+  const c = S.chats.get(m.deviceId) || { deviceId: m.deviceId, name: m.deviceName, unread: 0 };
+  c.name = m.deviceName || c.name;
+  c.last = msg;
+  const viewing = S.view?.chatDevice === m.deviceId && !document.hidden;
+  if (msg.from === 'pc' && !viewing) {
+    c.unread = (c.unread || 0) + 1;
+    toast(`Nachricht von ${c.name}`, 'info', msg.text.slice(0, 160), 9000);
+    notifyDesktop(`Nachricht von ${c.name}`, msg.text, `#/messages/${m.deviceId}`);
+  }
+  S.chats.set(m.deviceId, c);
+  updateChatCount();
+  S.view?.onChat?.(m);
+}
+
+// Desktop-Benachrichtigungen (pro Browser, siehe Einstellungen)
+function notifyOn() { try { return localStorage.getItem('nrmm-notify') === '1' && 'Notification' in window && Notification.permission === 'granted'; } catch { return false; } }
+function notifyDesktop(title, body, href) {
+  if (!notifyOn() || !document.hidden) return;
+  try {
+    const n = new Notification(title, { body: body.slice(0, 200), icon: '/favicon.svg', tag: href });
+    n.onclick = () => { window.focus(); location.hash = href; n.close(); };
+  } catch { /* nicht verfügbar */ }
+}
+
+function chatBubbles(msgs) {
+  if (!msgs.length) return `<div class="chat-empty">${icon('message', 22)}<p>Noch keine Nachrichten. Schreib etwas – am PC geht dann ein Fenster mit deiner Nachricht auf.</p></div>`;
+  let lastDay = '';
+  return msgs.map((m) => {
+    const d = new Date(m.at);
+    const day = d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+    const sep = day !== lastDay ? `<div class="chat-day">${esc(day)}</div>` : '';
+    lastDay = day;
+    const mine = m.from === 'admin';
+    const meta = `${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}${mine ? (m.read ? ' · gelesen' : ' · zugestellt') : ''}`;
+    return `${sep}<div class="msg ${mine ? 'mine' : 'theirs'}"><div class="bubble">${esc(m.text).replace(/\n/g, '<br>')}</div>
+      <span class="msg-meta">${mine ? '' : `${esc(m.author || '')} · `}${esc(meta)}</span></div>`;
+  }).join('');
+}
+
+// Unterhaltung mit einem PC (für Seite „Nachrichten“ und den Geräte-Tab)
+class ChatThread {
+  constructor(devId, el) { this.id = devId; this.el = el; this.msgs = []; }
+  async load() {
+    const d = S.devices.get(this.id);
+    this.el.innerHTML = `<div class="chat">
+      <div class="chat-log" id="clog" aria-live="polite"></div>
+      <form class="chat-compose" id="cf"><textarea class="input" name="t" rows="2" maxlength="2000" placeholder="Antwort an ${esc(d ? d.name : 'den PC')} …" title="Enter sendet, Umschalt + Enter = neue Zeile"></textarea>
+        <button class="btn primary">${icon('send', 16)} Senden</button></form>
+      <p class="small faint chat-hint" id="chint"></p></div>`;
+    const f = $('#cf', this.el);
+    f.t.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); f.requestSubmit(); } };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      const t = f.t.value.trim();
+      if (!t) return;
+      f.t.value = '';
+      try {
+        const r = await api('POST', `/api/devices/${this.id}/chat`, { text: t });
+        $('#chint', this.el).textContent = r.delivered ? '' : 'Gerade ist niemand am PC angemeldet – die Nachricht erscheint, sobald sich jemand anmeldet.';
+      } catch (ex) { f.t.value = t; toast('Nicht gesendet', 'error', ex.message); }
+    };
+    await this.refresh();
+    f.t.focus();
+  }
+  async refresh() {
+    const r = await api('GET', `/api/devices/${this.id}/chat`).catch(() => null);
+    if (!r) return;
+    this.msgs = r.messages;
+    const c = S.chats.get(this.id);
+    if (c) { c.unread = 0; updateChatCount(); }
+    this.draw();
+  }
+  draw() {
+    const log = $('#clog', this.el);
+    if (!log) return;
+    const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    log.innerHTML = chatBubbles(this.msgs);
+    if (atEnd || !this.drawn) log.scrollTop = log.scrollHeight;
+    this.drawn = true;
+  }
+  onChat(m) {
+    if (m.deviceId !== this.id) return;
+    if (!this.msgs.some((x) => x.id === m.message.id)) this.msgs.push(m.message);
+    this.draw();
+    if (m.message.from === 'pc') api('GET', `/api/devices/${this.id}/chat`).then((r) => { this.msgs = r.messages; this.draw(); }).catch(() => {}); // als gelesen markieren
+  }
+  onChatRead(m) { if (m.deviceId === this.id && m.by === 'pc') this.refresh(); }
+}
+
+class MessagesView {
+  constructor(id) { this.sel = id; }
+  get chatDevice() { return this.sel; }
+  render(main) {
+    this.main = main;
+    main.innerHTML = `<div class="page-head"><div class="grow"><h1>Nachrichten</h1><p>Was die Leute an ihren PCs dir schreiben. Am PC: Startmenü › „Nachricht an Nicolaj“ oder das n-Symbol unten rechts.</p></div>
+      <button class="btn" id="newmsg">${icon('plus')} Neue Nachricht</button></div>
+      <div class="msg-layout ${this.sel ? 'has-sel' : ''}"><aside class="card conv-list" id="conv"></aside><section class="card conv-pane" id="pane"></section></div>`;
+    $('#newmsg', main).onclick = () => this.pickDevice();
+    this.drawList();
+    this.open(this.sel);
+  }
+  drawList() {
+    const box = $('#conv', this.main);
+    const list = [...S.chats.values()].filter((c) => S.devices.has(c.deviceId)).sort((a, b) => String(b.last?.at).localeCompare(String(a.last?.at)));
+    if (this.sel && !list.some((c) => c.deviceId === this.sel) && S.devices.has(this.sel)) list.unshift({ deviceId: this.sel, name: S.devices.get(this.sel).name, unread: 0 });
+    box.innerHTML = list.length ? list.map((c) => {
+      const d = S.devices.get(c.deviceId);
+      const last = c.last ? `${c.last.from === 'admin' ? 'Du: ' : ''}${c.last.text}` : 'Noch keine Nachrichten';
+      return `<a class="conv ${c.deviceId === this.sel ? 'active' : ''} ${c.unread ? 'unread' : ''}" href="#/messages/${esc(c.deviceId)}">
+        <div class="dev-ico ${d?.online ? 'on' : ''}">${icon('monitor', 16)}</div>
+        <div class="grow"><div class="conv-top"><b>${esc(d?.name || c.name)}</b><span>${c.last ? esc(ago(c.last.at)) : ''}</span></div>
+          <span class="conv-last">${esc(last.slice(0, 90))}</span></div>${c.unread ? `<em class="badge-n">${c.unread}</em>` : ''}</a>`;
+    }).join('') : `<div class="conv-none"><p>Noch keine Unterhaltungen.</p><p class="small faint">Sobald jemand am PC schreibt, erscheint es hier.</p></div>`;
+  }
+  async open(id) {
+    const pane = $('#pane', this.main);
+    if (!id || !S.devices.has(id)) {
+      pane.innerHTML = `<div class="conv-placeholder">${icon('message', 26)}<p>Wähle links eine Unterhaltung oder schreib einem PC eine neue Nachricht.</p></div>`;
+      return;
+    }
+    const d = S.devices.get(id);
+    pane.innerHTML = `<header class="conv-head"><a class="btn ghost sm back-btn" href="#/messages">${icon('back', 15)}</a>
+      <div class="dev-ico ${d.online ? 'on' : ''}">${icon('monitor', 18)}</div><div class="grow"><b>${esc(d.name)}</b>
+      <span class="small muted">${d.screenOnline ? 'jemand ist angemeldet' : d.online ? 'online, niemand angemeldet' : 'offline'}</span></div>
+      <a class="btn sm" href="#/d/${esc(id)}/overview">Gerät öffnen</a></header><div id="thread"></div>`;
+    this.thread = new ChatThread(id, $('#thread', pane));
+    await this.thread.load();
+  }
+  pickDevice() {
+    const devs = [...S.devices.values()].filter((d) => !d.pending).sort((a, b) => a.name.localeCompare(b.name, 'de'));
+    openModal({ title: 'Neue Nachricht', submitLabel: 'Weiter', body: `<label class="field">An welchen PC?<select class="input" name="d">${devs.map((d) => `<option value="${esc(d.id)}">${esc(d.name)}${d.screenOnline ? ' (angemeldet)' : ''}</option>`).join('')}</select></label>`,
+      onSubmit: async (f) => { location.hash = `#/messages/${f.d.value}`; } });
+  }
+  onChat(m) { this.drawList(); this.thread?.onChat(m); }
+  onChatRead(m) { this.drawList(); this.thread?.onChatRead(m); }
+  onDevice() { this.drawList(); }
+  onReconnect() { this.drawList(); this.thread?.refresh(); }
+}
+
+class ChatTab {
+  constructor(v) { this.v = v; }
+  render(el) {
+    this.v.chatDevice = this.v.id;
+    this.thread = new ChatThread(this.v.id, el);
+    this.thread.load();
+  }
+  onChat(m) { this.thread.onChat(m); }
+  onChatRead(m) { this.thread.onChatRead(m); }
 }
 
 // ---------- Zugangsanfragen ----------
@@ -774,6 +961,7 @@ const TABS = [
   ['security', 'Sicherheit', 'shield'],
   ['shell', 'PowerShell', 'terminal'],
   ['tasks', 'Aufgaben', 'list'],
+  ['chat', 'Nachrichten', 'message'],
   ['settings', 'Einstellungen', 'sliders'],
 ];
 
@@ -799,7 +987,7 @@ class DeviceView {
       <nav class="tabs">${TABS.map(([k, l, i]) => `<a href="#/d/${esc(this.id)}/${k}" class="${k === this.tab ? 'active' : ''}">${icon(i, 15)} ${l}</a>`).join('')}</nav>
       <div id="offline"></div><div id="tab"></div>`;
     this.drawHead();
-    const T = { overview: OverviewTab, screen: ScreenTab, users: UsersTab, software: SoftwareTab, security: SecurityTab, shell: ShellTab, tasks: TasksTab, settings: SettingsTab }[this.tab];
+    const T = { overview: OverviewTab, screen: ScreenTab, users: UsersTab, software: SoftwareTab, security: SecurityTab, shell: ShellTab, tasks: TasksTab, chat: ChatTab, settings: SettingsTab }[this.tab] || OverviewTab;
     this.tabObj = new T(this);
     this.tabObj.render($('#tab', main));
   }
@@ -836,6 +1024,8 @@ class DeviceView {
     }, 250);
   }
   onDevice(d) { if (d.id === this.id) this.refresh(); }
+  onChat(m) { this.tabObj?.onChat?.(m); }
+  onChatRead(m) { this.tabObj?.onChatRead?.(m); }
   onDeviceRemoved(id) { if (id === this.id) { toast('Gerät wurde entfernt', 'info'); location.hash = '#/'; } }
   onCommand(c) {
     if (c.deviceId !== this.id || !this.dev) return;
@@ -1764,6 +1954,7 @@ class SettingsView {
         <label class="field">Neues Passwort<input class="input" type="password" name="new" minlength="10" required autocomplete="new-password"><span class="hint">Mindestens 10 Zeichen.</span></label>
         <div><button class="btn primary">Ändern</button></div></form></section>
       <section class="card card-pad" id="reqs"></section>
+      <section class="card card-pad" id="ntf"></section>
       <section class="card card-pad" id="upd"></section>
       <section class="card card-pad" id="gh"></section>
       <section class="card card-pad" id="srv"></section>
@@ -1776,10 +1967,30 @@ class SettingsView {
     };
     this.drawTfa();
     this.drawRequests();
+    this.drawNotify();
     this.drawUpdates();
     this.drawGitHub();
     this.drawServer();
     this.drawCodes();
+  }
+  drawNotify() {
+    const box = $('#ntf', this.main);
+    const supported = 'Notification' in window;
+    const perm = supported ? Notification.permission : 'denied';
+    box.innerHTML = `<h2 style="margin-bottom:6px">Desktop-Benachrichtigungen</h2>
+      <p class="muted" style="margin:0 0 14px">Neue Nachrichten, Zugangsanfragen und Sicherheitsalarme melden sich als Windows- bzw. Handy-Benachrichtigung – auch wenn das Dashboard im Hintergrund offen ist. Gilt nur für diesen Browser.</p>
+      <label class="check"><input type="checkbox" id="nten" ${notifyOn() ? 'checked' : ''} ${supported ? '' : 'disabled'}> <span>Benachrichtigungen in diesem Browser<small>${!supported ? 'Dieser Browser unterstützt das nicht.' : perm === 'denied' ? 'Im Browser blockiert – über das Schloss-Symbol in der Adresszeile wieder erlauben.' : 'Der Browser fragt einmal nach der Erlaubnis.'}</small></span></label>`;
+    $('#nten', box).onchange = async (e) => {
+      try {
+        if (e.target.checked) {
+          const p = await Notification.requestPermission();
+          if (p !== 'granted') { e.target.checked = false; toast('Nicht erlaubt', 'error', 'Der Browser hat Benachrichtigungen abgelehnt.'); return; }
+          localStorage.setItem('nrmm-notify', '1');
+          new Notification('Benachrichtigungen sind an', { body: 'So sieht es aus, wenn dir jemand schreibt.', icon: '/favicon.svg' });
+        } else localStorage.setItem('nrmm-notify', '0');
+      } catch (ex) { toast('Fehler', 'error', ex.message); }
+      this.drawNotify();
+    };
   }
   async drawRequests() {
     const box = $('#reqs', this.main);

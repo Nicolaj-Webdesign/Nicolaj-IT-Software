@@ -229,6 +229,13 @@ type uiBtn struct {
 type uiInput struct {
 	Label, Placeholder, Value string
 	MaxLen                    int
+	Multiline                 bool
+}
+
+type uiChatMsg struct {
+	Mine bool // von der Person am PC
+	Text string
+	Meta string // Uhrzeit, „gelesen“
 }
 
 type uiRow struct{ Label, Value, Tone string }
@@ -252,7 +259,9 @@ type uiDialog struct {
 	Rows     []uiRow
 	Bullets  []uiBullet
 	Input    *uiInput
-	Progress float64 // < 0: keiner; 0..1
+	Chat     []uiChatMsg // nicht nil: Gesprächsansicht
+	ChatHint string      // Text, solange noch nichts geschrieben wurde
+	Progress float64     // < 0: keiner; 0..1
 	Note     string
 	Buttons  []uiBtn
 	Closable bool
@@ -397,7 +406,9 @@ func layoutDialog(d *uiDialog, st uiState, m measurer) *uiScene {
 	b.header(w, d.Closable)
 	y := 66.0
 
-	if d.Message != "" { // Chat-Stil (Nachricht)
+	if d.Chat != nil { // Gesprächsverlauf
+		y = b.chat(d, w, y)
+	} else if d.Message != "" { // Chat-Stil (Nachricht)
 		b.logo(pad, y+2, 38)
 		x := pad + 50
 		b.text(x, y, inner-50, fBodyBold, pal.text, 0, d.From)
@@ -474,7 +485,10 @@ func layoutDialog(d *uiDialog, st uiState, m measurer) *uiScene {
 		y += h
 	}
 
-	if in := d.Input; in != nil {
+	if in := d.Input; in != nil && in.Multiline {
+		y += 14
+		y = b.multiInput(in, pad, y, inner)
+	} else if in != nil {
 		y += 18
 		b.text(pad, y, inner, fLabel, pal.muted, 0, in.Label)
 		y += lineH(fLabel) + 6
@@ -562,6 +576,120 @@ func layoutDialog(d *uiDialog, st uiState, m measurer) *uiScene {
 	s.Ops[0].H = s.H // Kartenhintergrund auf die echte Höhe
 	b.stroke(0, 0, w, s.H, s.R, 1, pal.border)
 	return s
+}
+
+// chat: Titel und Gesprächsverlauf (die neuesten Nachrichten, so viele wie hineinpassen).
+func (b *builder) chat(d *uiDialog, w, y float64) float64 {
+	const pad = 24.0
+	inner := w - 2*pad
+	m := b.m
+	if d.Title != "" {
+		b.text(pad, y, inner, fTitle, pal.text, 0, d.Title)
+		y += lineH(fTitle) + 2
+	}
+	if d.Body != "" {
+		b.text(pad, y, inner, fSmall, pal.faint, 0, d.Body)
+		y += lineH(fSmall)
+	}
+	y += 14
+	const area = 330.0
+	if len(d.Chat) == 0 {
+		h := 132.0
+		b.fill(pad, y, inner, h, 14, pal.surface)
+		b.stroke(pad, y, inner, h, 14, 1, pal.surfaceBorder)
+		b.logo((w-40)/2, y+22, 40)
+		ls := wrapText(m, fBody, d.ChatHint, inner-48, 3)
+		b.lines(pad+24, y+74, inner-48, fBody, pal.muted, 1, ls)
+		return y + h
+	}
+	type block struct {
+		msg   uiChatMsg
+		lines []string
+		h     float64
+	}
+	maxW := inner*0.8 - 28
+	var blocks []block
+	total := 0.0
+	for i := len(d.Chat) - 1; i >= 0; i-- {
+		cm := d.Chat[i]
+		ls := wrapText(m, fMsg, cm.Text, maxW, 12)
+		h := float64(len(ls))*lineH(fMsg) + 20 + lineH(fSmall) + 10
+		if total+h > area && len(blocks) > 0 {
+			break
+		}
+		blocks = append([]block{{cm, ls, h}}, blocks...)
+		total += h
+	}
+	for _, bl := range blocks {
+		tw := 0.0
+		for _, l := range bl.lines {
+			tw = math.Max(tw, m.textW(fMsg, l))
+		}
+		bw := math.Min(inner*0.8, tw+28)
+		bh := float64(len(bl.lines))*lineH(fMsg) + 20
+		if bl.msg.Mine {
+			x := pad + inner - bw
+			b.fill(x, y, bw, bh, 14, pal.accent)
+			b.lines(x+14, y+10, bw-28, fMsg, pal.logoInk, 0, bl.lines)
+			b.text(pad, y+bh+3, inner, fSmall, pal.faint, 2, bl.msg.Meta)
+		} else {
+			b.logo(pad, y+bh-26, 26)
+			x := pad + 34
+			bw = math.Min(bw, inner-34)
+			b.fill(x, y, bw, bh, 14, pal.surface)
+			b.stroke(x, y, bw, bh, 14, 1, pal.surfaceBorder)
+			b.lines(x+14, y+10, bw-28, fMsg, pal.text, 0, bl.lines)
+			b.text(x, y+bh+3, inner, fSmall, pal.faint, 0, "Nicolaj · "+bl.msg.Meta)
+		}
+		y += bl.h
+	}
+	return y - 10
+}
+
+// multiInput: mehrzeiliges Eingabefeld (wächst bis 5 Zeilen, zeigt das Ende).
+func (b *builder) multiInput(in *uiInput, x, y, w float64) float64 {
+	m, st := b.m, b.st
+	focused := st.Focus == "input"
+	tw := w - 28
+	var ls []string
+	if in.Value != "" {
+		ls = wrapText(m, fMsg, in.Value, tw-4, 0)
+		if strings.HasSuffix(in.Value, "\n") {
+			ls = append(ls, "")
+		}
+	}
+	n := len(ls)
+	if n < 2 {
+		n = 2
+	}
+	if n > 5 {
+		n = 5
+	}
+	if len(ls) > 5 {
+		ls = ls[len(ls)-5:]
+	}
+	fh := float64(n)*lineH(fMsg) + 22
+	b.fill(x, y, w, fh, 12, pal.surface)
+	if focused {
+		b.stroke(x, y, w, fh, 12, 1.5, pal.accent)
+	} else {
+		b.stroke(x, y, w, fh, 12, 1, pal.border)
+	}
+	if len(ls) == 0 {
+		b.text(x+14, y+11, tw, fMsg, pal.faint, 0, in.Placeholder)
+		if focused && st.CaretOn {
+			b.fill(x+14, y+14, 1.5, lineH(fMsg)-6, 0.5, pal.text)
+		}
+	} else {
+		b.lines(x+14, y+11, tw, fMsg, pal.text, 0, ls)
+		if focused && st.CaretOn {
+			last := ls[len(ls)-1]
+			cy := y + 11 + float64(len(ls)-1)*lineH(fMsg)
+			b.fill(x+14+m.textW(fMsg, last)+1, cy+3, 1.5, lineH(fMsg)-6, 0.5, pal.text)
+		}
+	}
+	b.s.Hits = append(b.s.Hits, uiHit{"input", x, y, w, fh})
+	return y + fh
 }
 
 // layoutBar: Hinweisleiste oben am Bildschirm während einer Verbindung.

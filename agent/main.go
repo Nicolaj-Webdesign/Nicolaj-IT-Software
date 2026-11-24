@@ -73,6 +73,8 @@ func main() {
 		runSim(rest)
 	case "info":
 		runInfo()
+	case "chat":
+		runChat()
 	case "update-finish":
 		runUpdateFinish(rest)
 	case "version", "--version", "-v":
@@ -285,6 +287,25 @@ func (c *Client) postJSON(path string, in, out any) error {
 	return nil
 }
 
+func (c *Client) getJSON(path string, out any) error {
+	req, err := c.newReq(context.Background(), "GET", path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.api.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == 401 {
+		return errUnauthorized
+	}
+	if resp.StatusCode >= 300 {
+		return apiError(resp)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
 func (c *Client) postRaw(path string, body []byte) error {
 	req, err := c.newReq(context.Background(), "POST", path, bytes.NewReader(body))
 	if err != nil {
@@ -485,6 +506,7 @@ func runService() {
 	}
 	c := newClient(cfg)
 	logf("Dienst %s gestartet (Gerät %s)", agentVersion, cfg.DeviceID)
+	go ensureShortcuts()
 	var rejectOnce sync.Once
 	onRejected = func() { rejectOnce.Do(selfUninstall) } // abgelehnte Anfrage: Programm entfernt sich selbst
 
@@ -685,6 +707,7 @@ func runScreen() {
 	}
 	c := newClient(cfg)
 	logf("Bildschirm-Helfer %s gestartet", agentVersion)
+	startTray(c)
 
 	var mu sync.Mutex
 	var cur *screenSess
@@ -739,6 +762,8 @@ func runScreen() {
 			mu.Lock()
 			stop()
 			mu.Unlock()
+		case "chat": // Antwort von Nicolaj: Nachrichten-Fenster öffnen
+			openChatWindow(c, true)
 		case "input":
 			var m struct {
 				SessionID string       `json:"sessionId"`

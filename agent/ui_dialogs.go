@@ -151,7 +151,7 @@ func dlgInfo(i pcInfo) *uiDialog {
 	return &uiDialog{Badge: 0, Title: "Deine PC-ID", Body: "Nenne diese Nummer, wenn du Nicolaj Webdesign um Hilfe bittest.",
 		Big: id, BigCopy: i.PCID != "",
 		Rows:     []uiRow{{"PC-Name", i.Host, ""}, {"Im Dashboard als", i.Name, ""}, {"Verbindung", status, tone}},
-		Progress: -1, Closable: true, Buttons: []uiBtn{{ID: "ok", Label: "Schließen", Kind: "primary"}}}
+		Progress: -1, Closable: true, Buttons: []uiBtn{{ID: "chat", Label: "Nachricht an Nicolaj", Kind: "secondary"}, {ID: "ok", Label: "Schließen", Kind: "primary"}}}
 }
 
 // ---------- Allgemeiner Installer mit Zugangsanfrage ----------
@@ -183,4 +183,20 @@ func dlgRequestDone(pcID string) *uiDialog {
 		d.BigLabel, d.Big, d.BigCopy = "Deine PC-ID", id, true
 	}
 	return d
+}
+
+// ---------- Nachrichten ----------
+
+const chatTitle = "Nachrichten – Nicolaj Fernwartung"
+
+func dlgChat(msgs []uiChatMsg, draft, note string) *uiDialog {
+	if msgs == nil {
+		msgs = []uiChatMsg{}
+	}
+	return &uiDialog{Width: 460, Title: "Nachricht an Nicolaj", Body: "Nicolaj antwortet dir hier – meist noch am selben Tag.",
+		Chat: msgs, ChatHint: "Schreib einfach, wobei du Hilfe brauchst. Die Antwort erscheint hier und das Fenster geht von selbst auf.",
+		Input:    &uiInput{Placeholder: "Deine Nachricht …", Value: draft, MaxLen: 2000, Multiline: true},
+		Progress: -1, Note: note, Closable: true,
+		Buttons: []uiBtn{{ID: "close", Label: "Schließen", Kind: "secondary"},
+			{ID: "send", Label: "Senden", Kind: "primary", Disabled: strings.TrimSpace(draft) == ""}}}
 }

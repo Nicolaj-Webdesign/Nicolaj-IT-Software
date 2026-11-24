@@ -71,6 +71,13 @@ func allScenes() []namedScene {
 		{"7-pc-id", d(dlgInfo(pcInfo{Installed: true, PCID: "190799880", Host: "PCHAUSEN", Name: "Main PC", Online: true}))},
 		{"8-entfernen", d(dlgUninstallConfirm())},
 		{"9-leiste", func(m measurer, st uiState) *uiScene { return layoutBar(barText, st, m) }},
+		{"10-chat-leer", d(dlgChat(nil, "", ""))},
+		{"11-chat", d(dlgChat([]uiChatMsg{
+			{Mine: true, Text: "Hallo Nicolaj, mein Drucker druckt nicht mehr. Er zeigt nur noch „Fehler“ an.", Meta: "gestern 18:02 · gelesen"},
+			{Mine: false, Text: "Hallo Helga! Ich schau mir das gleich an – lass den PC einfach an.", Meta: "gestern 18:10"},
+			{Mine: false, Text: "So, fertig. Die Druckerwarteschlange hing. Probier es mal aus!", Meta: "gestern 18:24"},
+			{Mine: true, Text: "Super, geht wieder! Danke dir 😊", Meta: "gerade eben"},
+		}, "Ich hätte noch eine Frage zu meinen E-Mails", "Gesendet ✓ – Nicolaj bekommt deine Nachricht im Dashboard."))},
 	}
 }
 

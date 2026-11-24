@@ -244,6 +244,8 @@ func (a *App) routes() *http.ServeMux {
 	// Schnittstelle für die Agents
 	m.HandleFunc("POST /api/agent/enroll", a.agentEnroll)
 	m.HandleFunc("POST /api/agent/request", a.agentRequest)
+	m.HandleFunc("GET /api/agent/chat", a.agentAuth(a.agentChatGet))
+	m.HandleFunc("POST /api/agent/chat", a.agentAuth(a.agentChatPost))
 	m.HandleFunc("GET /download", a.publicDownloadPage)
 	m.HandleFunc("GET /setup", a.publicDownloadPage)
 	m.HandleFunc("GET /download/Nicolaj-Fernwartung.exe", a.publicDownload)
@@ -275,6 +277,9 @@ func (a *App) routes() *http.ServeMux {
 	m.HandleFunc("POST /api/devices/{id}/approve", a.admin(a.apiDeviceApprove))
 	m.HandleFunc("POST /api/devices/{id}/reject", a.admin(a.apiDeviceReject))
 	m.HandleFunc("GET /api/requests/settings", a.admin(a.apiRequestSettings))
+	m.HandleFunc("GET /api/chats", a.admin(a.apiChats))
+	m.HandleFunc("GET /api/devices/{id}/chat", a.admin(a.apiDeviceChat))
+	m.HandleFunc("POST /api/devices/{id}/chat", a.admin(a.apiDeviceChatPost))
 	m.HandleFunc("GET /api/scripts", a.admin(a.apiScripts))
 	m.HandleFunc("POST /api/scripts", a.admin(a.apiSaveScript))
 	m.HandleFunc("DELETE /api/scripts/{id}", a.admin(a.apiDeleteScript))

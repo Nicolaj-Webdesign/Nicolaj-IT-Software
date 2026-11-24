@@ -314,6 +314,7 @@ func runUninstall(args []string) {
 	quiet(sys32("schtasks.exe"), "/Delete", "/TN", taskResume, "/F")
 	quiet(sys32("reg.exe"), "delete", uninstKey, "/f")
 	os.Remove(shortcutPath())
+	os.Remove(chatShortcutPath())
 	os.RemoveAll(dataDir())
 
 	// Programmordner löschen, sobald dieses Programm beendet ist.
@@ -332,6 +333,13 @@ func runUninstall(args []string) {
 
 // runInfo zeigt PC-ID, PC-Name und Verbindung – für Anrufe wie „Oma, was steht da?“.
 func runInfo() {
+	if showInfo() == "chat" {
+		runChat()
+	}
+}
+
+// showInfo: Fenster mit PC-ID. Ergebnis "chat", wenn „Nachricht an Nicolaj“ gedrückt wurde.
+func showInfo() string {
 	cfg, err := loadConfig(screenConfigPath())
 	if err != nil {
 		cfg, err = loadConfig(agentConfigPath())
@@ -349,9 +357,16 @@ func runInfo() {
 			})
 		}
 	}
-	if _, uerr := runUI(dlgInfo(info), opts); uerr != nil {
+	res, uerr := runUI(dlgInfo(info), opts)
+	if uerr != nil {
 		msgBox(infoText(), mbIconInfo)
+		return ""
 	}
+	if res == "chat" && trayC != nil { // im Bildschirm-Helfer: Fenster dort öffnen
+		openChatWindow(trayC, false)
+		return ""
+	}
+	return res
 }
 
 func shortcutPath() string {
@@ -363,12 +378,30 @@ func shortcutPath() string {
 }
 
 // createShortcut legt im Startmenü (für alle Benutzer) „Nicolaj Fernwartung“ an → zeigt die PC-ID.
+func chatShortcutPath() string {
+	return filepath.Join(filepath.Dir(shortcutPath()), "Nachricht an Nicolaj.lnk")
+}
+
 func createShortcut(target string) {
-	script := `$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:NRMM_LNK)
+	script := `$sh = New-Object -ComObject WScript.Shell
+$s = $sh.CreateShortcut($env:NRMM_LNK)
 $s.TargetPath = $env:NRMM_TARGET; $s.Arguments = 'info'; $s.IconLocation = $env:NRMM_TARGET + ',0'
-$s.Description = 'Zeigt deine PC-ID für Nicolaj Webdesign'; $s.Save()`
-	if _, _, err := runPS(context.Background(), script, map[string]string{"NRMM_LNK": shortcutPath(), "NRMM_TARGET": target}, true); err != nil {
-		logf("Startmenü-Eintrag: %v", err)
+$s.Description = 'Zeigt deine PC-ID für Nicolaj Webdesign'; $s.Save()
+$c = $sh.CreateShortcut($env:NRMM_CHAT)
+$c.TargetPath = $env:NRMM_TARGET; $c.Arguments = 'chat'; $c.IconLocation = $env:NRMM_TARGET + ',0'
+$c.Description = 'Schreib Nicolaj Webdesign eine Nachricht'; $c.Save()`
+	if _, _, err := runPS(context.Background(), script, map[string]string{"NRMM_LNK": shortcutPath(), "NRMM_CHAT": chatShortcutPath(), "NRMM_TARGET": target}, true); err != nil {
+		logf("Startmenü-Einträge: %v", err)
+	}
+}
+
+// ensureShortcuts legt fehlende Startmenü-Einträge an (z. B. nach einem Update).
+func ensureShortcuts() {
+	if _, err := os.Stat(chatShortcutPath()); err == nil {
+		return
+	}
+	if exe, err := os.Executable(); err == nil {
+		createShortcut(exe)
 	}
 }
 

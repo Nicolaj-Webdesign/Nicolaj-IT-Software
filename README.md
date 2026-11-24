@@ -19,6 +19,9 @@ Eigene Fernwartungs-Software (RMM) für Nicolaj Webdesign – wie NinjaOne, Intu
 - **Website mit Download** – unter deiner Server-Adresse (z. B. `rmm.nicolaj-webdesign.de`): Infos und Installer. Wer ihn benutzt, gibt seinen Namen ein und fragt Zugang an – erst nach deinem **Annehmen** kann der PC etwas. Abgelehnte PCs entfernen das Programm selbst.
 - **Gruppen** (z. B. Familie, Kunden), **Übersicht** (online, offline, braucht Aufmerksamkeit, Agent veraltet), **Mehrfachauswahl**: Nachricht, Software, Skript, Neustart an viele PCs auf einmal
 - **Schnellsuche** mit `Strg + K` und **gespeicherte Skripte** (einmal schreiben, überall ausführen)
+- **Nachrichten**: Am PC über das **n-Symbol unten rechts** oder Startmenü › **„Nachricht an Nicolaj“** schreiben. Du antwortest im Dashboard unter **Nachrichten**, am PC geht das Fenster mit deiner Antwort von selbst auf. Mit „gelesen“-Anzeige auf beiden Seiten.
+- **Desktop-Benachrichtigungen** im Browser bei neuen Nachrichten, Zugangsanfragen und Alarmen
+- **Warnung bei fast vollem Speicher** (unter 10 % oder 5 GB frei) – zählt zu „Brauchen Aufmerksamkeit“
 - **Fenster am PC im Nicolaj-Look**: Installer, Bildschirm-Abfrage, Nachrichten, PC-ID und Verbindungsleiste – dunkel, mit Logo, wie man es von Discord oder Steam kennt
 
 **Adressen:** `/` ist die öffentliche Website, das Dashboard liegt unter **`/admin`**.
@@ -68,7 +71,8 @@ Der `nicolaj-agent.exe` aus dem GitHub-Release funktioniert ebenfalls als Anfrag
   - **Agent** – Verwaltungsdienst, läuft als SYSTEM ab Systemstart
   - **Bildschirm** – Helfer in der Sitzung der angemeldeten Person
 - Eintrag unter **Einstellungen › Apps › „Nicolaj Fernwartung“** – darüber jederzeit deinstallierbar
-- Startmenü-Eintrag **„Nicolaj Fernwartung“** – zeigt PC-ID, PC-Name und ob die Verbindung steht
+- Startmenü-Einträge **„Nicolaj Fernwartung“** (PC-ID, PC-Name, Verbindung) und **„Nachricht an Nicolaj“**
+- Symbol **„n“ unten rechts** im Infobereich: Klick = Nachricht schreiben, Rechtsklick = PC-ID (bei Windows 11 ggf. unter dem Pfeil `^`)
 - Bei jeder Bildschirm-Verbindung: **Hinweisleiste** oben am Bildschirm mit „Trennen“-Knopf
 - Standardmäßig fragt der PC vorher **„Erlauben?“** (pro Gerät abschaltbar, z. B. für deinen eigenen Test-PC)
 
@@ -301,4 +305,4 @@ agent/    Agent für Windows (Go, Win32 direkt über syscall)
 
 ### Ideen für die nächsten Versionen
 
-Chat-Fenster am PC (Nachricht an Nicolaj, Antwort per Telegram) · Serverwechsel per Update · Datei-Übertragung · Zwischenablage · Monitor-Auswahl · Windows-Updates · Warnungen (Platte voll, Virenschutz aus, offline seit X Tagen) · mehrere Techniker-Konten mit Rollen · Code-Signing
+Nachrichten zusätzlich per Telegram · Serverwechsel per Update · Datei-Übertragung · Zwischenablage · Monitor-Auswahl · Windows-Updates · Warnungen (Platte voll, Virenschutz aus, offline seit X Tagen) · mehrere Techniker-Konten mit Rollen · Code-Signing

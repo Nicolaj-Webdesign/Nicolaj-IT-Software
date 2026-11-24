@@ -163,6 +163,7 @@ func (a *App) apiDeviceDelete(w http.ResponseWriter, r *http.Request, user strin
 		if dev := d.Devices[id]; dev != nil {
 			name = dev.Name
 			delete(d.Devices, id)
+			delete(d.Chats, id)
 		}
 	})
 	if name == "" {

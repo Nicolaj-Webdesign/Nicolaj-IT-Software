@@ -443,3 +443,12 @@ func showMessage(text string) { logf("(Simulation) Nachricht: %s", text) }
 func lockScreen() error       { logf("(Simulation) Bildschirm gesperrt"); return nil }
 
 func selfUninstall() { logf("Simulation: Agent würde sich jetzt selbst entfernen."); os.Exit(0) }
+
+func runChat() { fmt.Println("Das Nachrichten-Fenster gibt es nur unter Windows.") }
+func openChatWindow(c *Client, incoming bool) {
+	if msgs, err := c.chatHistory(); err == nil && len(msgs) > 0 {
+		logf("Simulation: neue Nachricht von Nicolaj: %s", msgs[len(msgs)-1].Text)
+	}
+}
+func startTray(*Client) {}
+func ensureShortcuts()  {}

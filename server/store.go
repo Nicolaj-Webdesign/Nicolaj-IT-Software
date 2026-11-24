@@ -104,15 +104,25 @@ type SessionRec struct {
 }
 
 type DBData struct {
-	Admins      []*Admin             `json:"admins"`
-	Devices     map[string]*Device   `json:"devices"`
-	EnrollCodes []*EnrollCode        `json:"enrollCodes"`
-	Commands    []*Command           `json:"commands"`
-	Audit       []*AuditEntry        `json:"audit"`
-	Sessions    []*SessionRec        `json:"sessions"`
-	Settings    *Settings            `json:"settings"`
-	Rejected    map[string]time.Time `json:"rejected,omitempty"` // abgelehnte Anfragen: Agent entfernt sich beim nächsten Kontakt
-	Scripts     []*Script            `json:"scripts,omitempty"`  // gespeicherte PowerShell-Skripte
+	Admins      []*Admin              `json:"admins"`
+	Devices     map[string]*Device    `json:"devices"`
+	EnrollCodes []*EnrollCode         `json:"enrollCodes"`
+	Commands    []*Command            `json:"commands"`
+	Audit       []*AuditEntry         `json:"audit"`
+	Sessions    []*SessionRec         `json:"sessions"`
+	Settings    *Settings             `json:"settings"`
+	Rejected    map[string]time.Time  `json:"rejected,omitempty"` // abgelehnte Anfragen: Agent entfernt sich beim nächsten Kontakt
+	Scripts     []*Script             `json:"scripts,omitempty"`  // gespeicherte PowerShell-Skripte
+	Chats       map[string][]*ChatMsg `json:"chats,omitempty"`    // Nachrichten pro Gerät
+}
+
+type ChatMsg struct {
+	ID     string    `json:"id"`
+	From   string    `json:"from"` // "pc" oder "admin"
+	Author string    `json:"author"`
+	Text   string    `json:"text"`
+	At     time.Time `json:"at"`
+	Read   bool      `json:"read"` // von der Gegenseite gelesen
 }
 
 type Script struct {

@@ -263,6 +263,7 @@ func (r *uiRenderer) close() {
 // ---------- Fenster ----------
 
 type uiOpts struct {
+	Title     string // Fenstertitel (Taskleiste); Standard „Nicolaj Fernwartung“
 	Topmost   bool
 	Beep      uintptr // MessageBeep-Typ, 0 = keiner
 	Bar       bool    // Hinweisleiste: nicht aktivieren, nicht in der Taskleiste, nicht im Live-Bild
@@ -492,7 +493,7 @@ func (w *uiWin) typeChar(r rune) {
 			}
 		}
 		return
-	case r >= 32 && (in.MaxLen == 0 || utf8.RuneCountInString(in.Value) < in.MaxLen):
+	case (r >= 32 || (r == '\n' && in.Multiline)) && (in.MaxLen == 0 || utf8.RuneCountInString(in.Value) < in.MaxLen):
 		in.Value += string(r)
 	default:
 		w.mu.Unlock()
@@ -602,7 +603,16 @@ func uiWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) (ret uintptr) {
 		return 0
 	case wmKeyDown:
 		switch wParam {
-		case 0x0D: // Enter
+		case 0x0D: // Enter (Umschalt+Enter im mehrzeiligen Feld = neue Zeile)
+			if ks, _, _ := puGetKeyState.Call(0x10); int16(ks) < 0 {
+				w.mu.Lock()
+				multi := w.dlg != nil && w.dlg.Input != nil && w.dlg.Input.Multiline && w.st.Focus == "input"
+				w.mu.Unlock()
+				if multi {
+					w.typeChar('\n')
+					return 0
+				}
+			}
 			w.mu.Lock()
 			def := ""
 			if w.scene != nil {
@@ -747,8 +757,12 @@ func runUILocked(d *uiDialog, o uiOpts) (res string, err error) {
 		ex |= exAppWindow
 	}
 	inst, _, _ := procGetModuleHandleW.Call(0)
+	title := o.Title
+	if title == "" {
+		title = "Nicolaj Fernwartung"
+	}
 	hwnd, _, err := procCreateWindowExW.Call(ex, uintptr(unsafe.Pointer(uiClassName)),
-		uintptr(unsafe.Pointer(utf16Ptr("Nicolaj Fernwartung"))), wsPopup, 0, 0, 10, 10, 0, 0, inst, 0)
+		uintptr(unsafe.Pointer(utf16Ptr(title))), wsPopup, 0, 0, 10, 10, 0, 0, inst, 0)
 	if hwnd == 0 {
 		return "", errors.New("Fenster konnte nicht erstellt werden: " + err.Error())
 	}

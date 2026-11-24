@@ -122,6 +122,7 @@ func (a *App) apiDeviceReject(w http.ResponseWriter, r *http.Request, user strin
 		if dev := d.Devices[id]; dev != nil && dev.Pending {
 			name = dev.Name
 			delete(d.Devices, id)
+			delete(d.Chats, id)
 			if d.Rejected == nil {
 				d.Rejected = map[string]time.Time{}
 			}
