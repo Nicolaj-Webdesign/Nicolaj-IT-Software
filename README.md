@@ -16,6 +16,12 @@ Eigene Fernwartungs-Software (RMM) für Nicolaj Webdesign – wie NinjaOne, Intu
 - **Offline-Warteschlange**: Aufträge an ausgeschaltete PCs werden ausgeführt, sobald sie online sind (bis 24 Std.)
 - **Auto-Update**: Die PCs aktualisieren sich selbst – erst Testgeräte, dann alle, mit automatischem Zurücksetzen bei Problemen
 - **Sicherheitspaket (optional, pro PC)**: Virenschutz überwachen, scannen, härten, Funde entfernen, Alarm bei Bedrohungen (siehe unten)
+- **Website mit Download** – unter deiner Server-Adresse (z. B. `rmm.nicolaj-webdesign.de`): Infos und Installer. Wer ihn benutzt, gibt seinen Namen ein und fragt Zugang an – erst nach deinem **Annehmen** kann der PC etwas. Abgelehnte PCs entfernen das Programm selbst.
+- **Gruppen** (z. B. Familie, Kunden), **Übersicht** (online, offline, braucht Aufmerksamkeit, Agent veraltet), **Mehrfachauswahl**: Nachricht, Software, Skript, Neustart an viele PCs auf einmal
+- **Schnellsuche** mit `Strg + K` und **gespeicherte Skripte** (einmal schreiben, überall ausführen)
+- **Fenster am PC im Nicolaj-Look**: Installer, Bildschirm-Abfrage, Nachrichten, PC-ID und Verbindungsleiste – dunkel, mit Logo, wie man es von Discord oder Steam kennt
+
+**Adressen:** `/` ist die öffentliche Website, das Dashboard liegt unter **`/admin`**.
 
 ---
 
@@ -38,7 +44,7 @@ Alle Daten liegen im Ordner `data/` neben dem Programm.
 
 ### 2. Dashboard öffnen
 
-Adresse im Browser öffnen. Die Zertifikatswarnung ist beim ersten Mal normal (eigenes Zertifikat) → „Erweitert“ → „Weiter“.
+Adresse mit `/admin` am Ende im Browser öffnen (z. B. `https://192.168.178.20:8443/admin`). Die Zertifikatswarnung ist beim ersten Mal normal (eigenes Zertifikat) → „Erweitert“ → „Weiter“.
 Einrichtungscode eingeben, Konto anlegen. **Danach gleich unter Einstellungen die Zwei-Faktor-Anmeldung einschalten.**
 
 ### 3. PC hinzufügen
@@ -47,6 +53,10 @@ Dashboard → **Gerät hinzufügen** → Name eingeben → **Installer herunterl
 Den Installer auf den PC bringen und doppelklicken → Windows fragt nach Admin-Rechten → Ja → bestätigen. Fertig, der PC taucht sofort im Dashboard auf.
 
 Jeder Installer gilt nur für **einen** PC und läuft nach der gewählten Zeit ab.
+
+**Oder per Link (Zugangsanfrage):** Schick einfach den Link zu deiner Website (Dashboard › Einstellungen › „Website & Zugangsanfragen“). Dort lädt man den Installer, gibt seinen Namen ein und tippt **„Zugang anfragen“**. Die Anfrage erscheint oben in der Geräteliste – **Annehmen** oder **Ablehnen**. Bis dahin kann der PC nichts. Abschaltbar in den Einstellungen.
+
+Der `nicolaj-agent.exe` aus dem GitHub-Release funktioniert ebenfalls als Anfrage-Installer, wenn im Repo die Variable **`NRMM_SERVER_URL`** gesetzt ist (Settings › Secrets and variables › Actions › *Variables*, z. B. `https://rmm.nicolaj-webdesign.de`). Bei einem privaten Repo kann Oma dort aber nichts herunterladen – nimm dann den Link zur Website.
 
 ---
 
@@ -59,7 +69,7 @@ Jeder Installer gilt nur für **einen** PC und läuft nach der gewählten Zeit a
   - **Bildschirm** – Helfer in der Sitzung der angemeldeten Person
 - Eintrag unter **Einstellungen › Apps › „Nicolaj Fernwartung“** – darüber jederzeit deinstallierbar
 - Startmenü-Eintrag **„Nicolaj Fernwartung“** – zeigt PC-ID, PC-Name und ob die Verbindung steht
-- Bei jeder Bildschirm-Verbindung: **rote Leiste** oben am Bildschirm mit „Trennen“-Knopf
+- Bei jeder Bildschirm-Verbindung: **Hinweisleiste** oben am Bildschirm mit „Trennen“-Knopf
 - Standardmäßig fragt der PC vorher **„Erlauben?“** (pro Gerät abschaltbar, z. B. für deinen eigenen Test-PC)
 
 Bitte nur auf PCs installieren, deren Besitzer Bescheid wissen und einverstanden sind.
@@ -205,7 +215,7 @@ Coolify › Projekt › *+ New* › **Docker Image** → `ghcr.io/nicolaj-webdes
   NRMM_PUBLIC_URL=https://rmm.nicolaj-webdesign.de
   NRMM_CLOUDFLARE=1          # nur beim Cloudflare Tunnel
   ```
-- **Deploy**. Den **Einrichtungscode** findest du im *Logs*-Tab → Konto anlegen → **sofort 2FA einrichten**.
+- **Deploy**. Den **Einrichtungscode** findest du im *Logs*-Tab → `https://rmm.nicolaj-webdesign.de/admin` öffnen → Konto anlegen → **sofort 2FA einrichten**.
 
 ### Schritt 4: Automatische Updates
 
@@ -291,4 +301,4 @@ agent/    Agent für Windows (Go, Win32 direkt über syscall)
 
 ### Ideen für die nächsten Versionen
 
-Serverwechsel per Update · Labeldruck (PC-ID + QR-Code) · Datei-Übertragung · Zwischenablage · Monitor-Auswahl · Windows-Updates · Warnungen (Platte voll, Virenschutz aus, offline seit X Tagen) · mehrere Techniker-Konten mit Rollen · Code-Signing
+Chat-Fenster am PC (Nachricht an Nicolaj, Antwort per Telegram) · Serverwechsel per Update · Datei-Übertragung · Zwischenablage · Monitor-Auswahl · Windows-Updates · Warnungen (Platte voll, Virenschutz aus, offline seit X Tagen) · mehrere Techniker-Konten mit Rollen · Code-Signing

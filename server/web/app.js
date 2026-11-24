@@ -26,6 +26,7 @@ const ICONS = {
   shield: '<path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6z"/>',
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   message: '<path d="M4 5h16v11H9l-5 4z"/>',
+  folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
   logout: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 8l-4 4 4 4M6 12h10"/>',
@@ -261,7 +262,8 @@ async function startApp() {
   app.className = '';
   app.innerHTML = `<div class="shell">
     <aside class="side">
-      <div class="brand"><span class="wordmark">nicolaj<i class="cursor"></i></span><span class="product">Fernwartung</span></div>
+      <a class="brand" href="#/"><img src="/logo.svg" alt="" width="34" height="34"><span><span class="wordmark">nicolaj<i class="cursor"></i></span><span class="product">Fernwartung</span></span></a>
+      <button type="button" class="side-search" id="psearch">${icon('search', 16)}<span>Suchen</span><kbd>Strg K</kbd></button>
       <nav class="nav">
         <a href="#/" data-nav="devices">${icon('monitor', 18)}<span>Geräte</span><em class="count" id="devcount"></em></a>
         <a href="#/security" data-nav="security">${icon('shield', 18)}<span>Sicherheit</span><em class="count" id="seccount"></em></a>
@@ -274,6 +276,13 @@ async function startApp() {
     <main class="main" id="main"></main></div>
     <div class="conn-banner" id="connbanner" hidden>Verbindung zum Server unterbrochen …</div>`;
   $('#logout').onclick = async () => { await api('POST', '/api/logout').catch(() => {}); S.me = null; renderLogin(); };
+  $('#psearch').onclick = () => openPalette();
+  if (!S.paletteKey) {
+    S.paletteKey = true;
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && S.me) { e.preventDefault(); openPalette(); }
+    });
+  }
   await loadDevices();
   S.info = await api('GET', '/api/server-info').catch(() => null);
   connectEvents();
@@ -289,8 +298,12 @@ async function loadDevices() {
 function updateCount() {
   const el = $('#devcount');
   if (!el) return;
-  const on = [...S.devices.values()].filter((d) => d.online).length;
-  el.textContent = S.devices.size ? `${on}/${S.devices.size}` : '';
+  const all = [...S.devices.values()];
+  const pend = all.filter((d) => d.pending).length;
+  const real = all.filter((d) => !d.pending);
+  const on = real.filter((d) => d.online).length;
+  el.textContent = pend ? `${pend} neu` : real.length ? `${on}/${real.length}` : '';
+  el.classList.toggle('fresh', pend > 0);
   const sc = $('#seccount');
   if (sc) {
     const bad = [...S.devices.values()].filter((d) => d.securityEnabled && secState(d).level === 'danger').length;
@@ -404,56 +417,266 @@ function statusPill(d) {
 
 // ---------- Geräteliste ----------
 class DevicesView {
-  constructor() { this.filter = ''; }
+  constructor() { this.filter = ''; this.view = 'all'; this.group = ''; this.selecting = false; this.sel = new Set(); }
   render(main) {
     this.main = main;
     main.innerHTML = `<div class="page-head"><div class="grow"><h1>Geräte</h1><p>Alle PCs, die du betreust.</p></div>
+      <button class="btn" id="selmode">${icon('check', 16)} Auswählen</button>
       <button class="btn primary" id="add">${icon('plus')} Gerät hinzufügen</button></div>
-      <div class="toolbar" id="tb" hidden><input class="input" id="flt" type="search" placeholder="Suchen nach Name, PC-ID, Benutzer, IP …"></div>
-      <div id="list"></div>`;
+      <div id="req"></div>
+      <div class="stats" id="stats"></div>
+      <div class="toolbar" id="tb"><input class="input" id="flt" type="search" placeholder="Suchen nach Name, PC-ID, Benutzer, IP …"><div class="chips" id="groups"></div></div>
+      <div id="list"></div>
+      <div class="selbar" id="selbar" hidden></div>`;
     $('#add', main).onclick = () => addDeviceModal();
+    $('#selmode', main).onclick = () => { this.selecting = !this.selecting; this.sel.clear(); this.draw(); };
     $('#flt', main).oninput = (e) => { this.filter = e.target.value.toLowerCase(); this.draw(); };
     this.draw();
     this.timer = setInterval(() => this.draw(), 30000);
   }
   destroy() { clearInterval(this.timer); }
+  attention(d) {
+    if (d.securityEnabled && secState(d).level === 'danger') return true;
+    if (inv(d).rebootPending) return true;
+    return !d.online && d.lastSeen && Date.now() - new Date(d.lastSeen) > 7 * 864e5;
+  }
   draw() {
     const list = $('#list', this.main);
-    const all = [...S.devices.values()];
+    const everything = [...S.devices.values()];
+    const pend = everything.filter((d) => d.pending).sort((a, b) => String(b.requestedAt).localeCompare(String(a.requestedAt)));
+    const all = everything.filter((d) => !d.pending);
+    const reqBox = $('#req', this.main);
+    reqBox.innerHTML = pend.length ? requestsCard(pend) : '';
+    bindRequests(reqBox);
+    $('#selmode', this.main).classList.toggle('active', this.selecting);
+    $('#selmode', this.main).hidden = all.length < 2;
+
+    // Übersicht
+    const on = all.filter((d) => d.online).length;
+    const att = all.filter((d) => this.attention(d)).length;
+    const old = all.filter((d) => isOutdated(d)).length;
+    const tiles = [
+      ['all', 'Alle Geräte', all.length, ''],
+      ['online', 'Online', on, 'ok'],
+      ['offline', 'Offline', all.length - on, ''],
+      ['attention', 'Brauchen Aufmerksamkeit', att, att ? 'warn' : ''],
+      ['outdated', 'Agent veraltet', old, old ? 'warn' : ''],
+    ];
+    $('#stats', this.main).innerHTML = all.length ? tiles.map(([k, l, n, tone]) => `<button type="button" class="stat ${this.view === k ? 'active' : ''}" data-view="${k}">
+      <b class="${tone}">${n}</b><span>${l}</span></button>`).join('') : '';
+    $$('[data-view]', this.main).forEach((b) => { b.onclick = () => { this.view = this.view === b.dataset.view ? 'all' : b.dataset.view; this.draw(); }; });
+
+    // Gruppen
+    const groups = [...new Set(all.map((d) => d.group).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'de'));
+    if (this.group && this.group !== '-' && !groups.includes(this.group)) this.group = '';
+    $('#groups', this.main).innerHTML = groups.length ? [['', 'Alle Gruppen'], ...groups.map((g) => [g, g]), ['-', 'Ohne Gruppe']]
+      .map(([v, l]) => `<button type="button" class="chip ${this.group === v ? 'on' : ''}" data-group="${esc(v)}">${esc(l)}</button>`).join('') : '';
+    $$('[data-group]', this.main).forEach((b) => { b.onclick = () => { this.group = b.dataset.group; this.draw(); }; });
     $('#tb', this.main).hidden = all.length < 2;
+
     if (!all.length) {
-      list.innerHTML = `<div class="card empty"><h2>Noch kein Gerät verbunden</h2>
-        <p>Füge deinen ersten PC hinzu: Code erstellen, Installer auf dem PC starten – fertig.</p>
+      list.innerHTML = pend.length ? '' : `<div class="card empty"><h2>Noch kein Gerät verbunden</h2>
+        <p>Füge deinen ersten PC hinzu – oder schick den Link zu deiner Website, dann können Leute selbst Zugang anfragen.</p>
         <button class="btn primary" id="add2">${icon('plus')} Ersten PC hinzufügen</button></div>`;
-      $('#add2', list).onclick = () => addDeviceModal();
+      const a2 = $('#add2', list);
+      if (a2) a2.onclick = () => addDeviceModal();
+      this.drawSelbar([]);
       return;
     }
     const f = this.filter, fd = f.replace(/\s+/g, '');
-    const devs = all.filter((d) => !f || [d.name, d.hostname, d.lastIp, inv(d).loggedOnUser, ...(inv(d).ips || [])].join(' ').toLowerCase().includes(f) || (fd.length >= 3 && /^\d+$/.test(fd) && (d.pcId || '').includes(fd)))
-      .sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name, 'de'));
-    list.innerHTML = `<div class="dev-grid">${devs.map((d) => `
-      <article class="card dev-card" data-id="${esc(d.id)}" tabindex="0">
-        <div class="top"><div class="dev-ico ${d.online ? 'on' : ''}">${icon('monitor', 20)}</div>
+    const devs = all.filter((d) => {
+      if (f && !([d.name, d.hostname, d.lastIp, d.group, inv(d).loggedOnUser, ...(inv(d).ips || [])].join(' ').toLowerCase().includes(f) || (fd.length >= 3 && /^\d+$/.test(fd) && (d.pcId || '').includes(fd)))) return false;
+      if (this.group === '-' && d.group) return false;
+      if (this.group && this.group !== '-' && d.group !== this.group) return false;
+      switch (this.view) {
+        case 'online': return d.online;
+        case 'offline': return !d.online;
+        case 'attention': return this.attention(d);
+        case 'outdated': return isOutdated(d);
+      }
+      return true;
+    }).sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name, 'de'));
+    if (!devs.length) {
+      list.innerHTML = `<div class="card empty"><h2>Keine Treffer</h2><p>Kein Gerät passt zu Suche und Filter.</p><button class="btn" id="reset">Filter zurücksetzen</button></div>`;
+      $('#reset', list).onclick = () => { this.view = 'all'; this.group = ''; this.filter = ''; $('#flt', this.main).value = ''; this.draw(); };
+      this.drawSelbar(devs);
+      return;
+    }
+    const sections = groups.length && !this.group
+      ? [...groups.map((g) => [g, devs.filter((d) => d.group === g)]), ['Ohne Gruppe', devs.filter((d) => !d.group)]].filter(([, l]) => l.length)
+      : [['', devs]];
+    list.innerHTML = sections.map(([title, ds]) => `${title ? `<h3 class="grp-title">${esc(title)} <span>${ds.length}</span></h3>` : ''}
+      <div class="dev-grid">${ds.map((d) => this.card(d)).join('')}</div>`).join('');
+    $$('.dev-card', list).forEach((c) => {
+      const id = c.dataset.id;
+      const go = (tab) => { location.hash = `#/d/${id}/${tab}`; };
+      c.onclick = (e) => {
+        if (this.selecting) { this.sel.has(id) ? this.sel.delete(id) : this.sel.add(id); this.draw(); return; }
+        const b = e.target.closest('[data-go]'); go(b ? b.dataset.go : 'overview');
+      };
+      c.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); c.click(); } };
+    });
+    this.drawSelbar(devs);
+  }
+  card(d) {
+    const picked = this.sel.has(d.id);
+    return `<article class="card dev-card ${this.selecting ? 'selecting' : ''} ${picked ? 'picked' : ''}" data-id="${esc(d.id)}" tabindex="0" ${this.selecting ? `role="checkbox" aria-checked="${picked}"` : ''}>
+        <div class="top">${this.selecting ? `<span class="pick">${picked ? icon('check', 14) : ''}</span>` : ''}<div class="dev-ico ${d.online ? 'on' : ''}">${icon('monitor', 20)}</div>
           <div class="title"><b>${esc(d.name)}</b><span>${esc(d.hostname || '')} · <span class="mono">ID ${esc(fmtPCID(d.pcId))}</span></span></div>${statusPill(d)}</div>
         <dl class="kv">
           <dt>System</dt><dd>${esc(osShort(d))}</dd>
           <dt>Benutzer</dt><dd>${esc(loggedUser(d))}</dd>
           <dt>${d.online ? 'IP' : 'Zuletzt'}</dt><dd>${d.online ? esc((inv(d).ips || [])[0] || d.lastIp || '–') : esc(ago(d.lastSeen))}</dd>
           ${d.securityEnabled ? `<dt>Schutz</dt><dd>${secBadge(d)}</dd>` : ''}
+          ${inv(d).rebootPending ? '<dt>Hinweis</dt><dd><span class="badge warn">Neustart nötig</span></dd>' : ''}
         </dl>
-        <div class="foot"><button class="btn sm" data-go="overview">Öffnen</button>
-          <button class="btn sm ${d.screenOnline ? 'primary' : ''}" data-go="screen" ${d.screenOnline ? '' : 'disabled'}>${icon('eye', 15)} Bildschirm</button></div>
-      </article>`).join('')}</div>`;
-    $$('.dev-card', list).forEach((c) => {
-      const go = (tab) => { location.hash = `#/d/${c.dataset.id}/${tab}`; };
-      c.onclick = (e) => { const b = e.target.closest('[data-go]'); go(b ? b.dataset.go : 'overview'); };
-      c.onkeydown = (e) => { if (e.key === 'Enter') go('overview'); };
-    });
+        ${this.selecting ? '' : `<div class="foot"><button class="btn sm" data-go="overview">Öffnen</button>
+          <button class="btn sm ${d.screenOnline ? 'primary' : ''}" data-go="screen" ${d.screenOnline ? '' : 'disabled'}>${icon('eye', 15)} Bildschirm</button></div>`}
+      </article>`;
+  }
+  drawSelbar(visible) {
+    const bar = $('#selbar', this.main);
+    if (!this.selecting) { bar.hidden = true; return; }
+    for (const id of this.sel) if (!S.devices.has(id)) this.sel.delete(id);
+    const n = this.sel.size;
+    bar.hidden = false;
+    bar.innerHTML = `<b>${n ? `${n} ausgewählt` : 'Geräte antippen zum Auswählen'}</b>
+      <button class="btn sm ghost" id="sall">${visible.length && visible.every((d) => this.sel.has(d.id)) ? 'Keine' : 'Alle'}</button>
+      <span class="spacer"></span>
+      <button class="btn sm" data-bulk="message" ${n ? '' : 'disabled'}>${icon('message', 15)} Nachricht</button>
+      <button class="btn sm" data-bulk="software" ${n ? '' : 'disabled'}>${icon('package', 15)} Software</button>
+      <button class="btn sm" data-bulk="script" ${n ? '' : 'disabled'}>${icon('terminal', 15)} Skript</button>
+      <button class="btn sm" data-bulk="group" ${n ? '' : 'disabled'}>${icon('folder', 15)} Gruppe</button>
+      <button class="btn sm" data-bulk="restart" ${n ? '' : 'disabled'}>${icon('refresh', 15)} Neu starten</button>
+      <button class="btn sm ghost" id="sdone">Fertig</button>`;
+    $('#sall', bar).onclick = () => {
+      const allPicked = visible.every((d) => this.sel.has(d.id));
+      visible.forEach((d) => (allPicked ? this.sel.delete(d.id) : this.sel.add(d.id)));
+      this.draw();
+    };
+    $('#sdone', bar).onclick = () => { this.selecting = false; this.sel.clear(); this.draw(); };
+    $$('[data-bulk]', bar).forEach((b) => { b.onclick = () => bulkAction(b.dataset.bulk, [...this.sel], () => this.draw()); });
   }
   onDevice() { this.draw(); }
   onDeviceRemoved() { this.draw(); }
   onScreen() { this.draw(); }
   onReconnect() { this.draw(); }
+}
+
+// ---------- Sammelaktionen für mehrere PCs ----------
+async function runBulk(ids, label, fn) {
+  const res = await Promise.allSettled(ids.map((id) => fn(id)));
+  const ok = res.filter((r) => r.status === 'fulfilled').length;
+  const bad = res.length - ok;
+  const first = res.find((r) => r.status === 'rejected');
+  toast(`${label}: ${ok} von ${res.length} PCs`, bad ? (ok ? 'info' : 'error') : 'ok',
+    bad ? `${bad} nicht möglich – ${first.reason?.message || 'Fehler'}` : 'Die Ergebnisse siehst du jeweils unter „Aufgaben“.', bad ? 9000 : 5000);
+}
+const cmdFor = (type, args) => (id) => api('POST', `/api/devices/${id}/commands`, { type, args });
+
+async function bulkAction(kind, ids, done) {
+  const names = ids.map((id) => S.devices.get(id)?.name).filter(Boolean);
+  const who = `<p class="muted" style="margin:0 0 12px">${esc(names.slice(0, 6).join(', '))}${names.length > 6 ? ` und ${names.length - 6} weitere` : ''}</p>`;
+  if (kind === 'message') {
+    openModal({ title: `Nachricht an ${ids.length} PCs`, submitLabel: 'Senden', body: `${who}
+      <label class="field">Nachricht<textarea class="input" name="text" rows="4" maxlength="1000" required placeholder="z. B. Ich mache heute Abend Updates – bitte die PCs anlassen."></textarea></label>
+      <p class="small faint" style="margin:8px 0 0">Erscheint auf allen PCs, an denen gerade jemand angemeldet ist.</p>`,
+      onSubmit: async (f) => { if (!f.text.value.trim()) throw new Error('Bitte eine Nachricht eingeben.'); runBulk(ids, 'Nachricht', cmdFor('user.message', { text: f.text.value })); } });
+  } else if (kind === 'software') {
+    openModal({ title: `Software auf ${ids.length} PCs installieren`, submitLabel: 'Installieren', body: `${who}
+      <div class="chips" style="margin-bottom:12px">${CATALOG.map(([n, id]) => `<button type="button" class="chip" data-pkg="${esc(id)}" data-name="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+      <label class="field">winget-Paket-ID<input class="input mono" name="id" required placeholder="z. B. Google.Chrome"></label>
+      <input type="hidden" name="name">`,
+      onOpen: (f) => { $$('[data-pkg]', f).forEach((b) => { b.onclick = () => { f.id.value = b.dataset.pkg; f.name.value = b.dataset.name; $$('[data-pkg]', f).forEach((x) => x.classList.toggle('on', x === b)); }; }); },
+      onSubmit: async (f) => { if (!f.id.value.trim()) throw new Error('Bitte ein Paket wählen.'); runBulk(ids, 'Installation', cmdFor('software.install', { id: f.id.value.trim(), name: f.name.value || f.id.value.trim() })); } });
+  } else if (kind === 'script') {
+    const scripts = await api('GET', '/api/scripts').catch(() => []);
+    openModal({ title: `Skript auf ${ids.length} PCs ausführen`, wide: true, submitLabel: 'Ausführen', danger: true, body: `${who}
+      ${scripts.length ? `<label class="field">Gespeichertes Skript<select class="input" id="pick"><option value="">– eigenes Skript –</option>${scripts.map((x, i) => `<option value="${i}">${esc(x.name)}</option>`).join('')}</select></label>` : ''}
+      <label class="field">PowerShell<textarea class="input console" name="script" rows="7" spellcheck="false" required></textarea></label>
+      <p class="small faint" style="margin:8px 0 0">Läuft auf jedem PC als SYSTEM. Offline-PCs führen es aus, sobald sie wieder online sind (bis 24 Std.).</p>`,
+      onOpen: (f) => { const p = $('#pick', f); if (p) p.onchange = () => { if (p.value !== '') f.script.value = scripts[+p.value].script; }; },
+      onSubmit: async (f) => { if (!f.script.value.trim()) throw new Error('Bitte ein Skript eingeben.'); runBulk(ids, 'Skript', cmdFor('script.run', { script: f.script.value, timeout: 300 })); } });
+  } else if (kind === 'group') {
+    const groups = [...new Set([...S.devices.values()].map((d) => d.group).filter(Boolean))];
+    openModal({ title: `Gruppe für ${ids.length} PCs`, submitLabel: 'Zuweisen', body: `${who}
+      <label class="field">Gruppe<input class="input" name="group" maxlength="30" list="grplist" placeholder="z. B. Familie, Kunden"><span class="hint">Leer lassen = keine Gruppe.</span></label>
+      <datalist id="grplist">${groups.map((g) => `<option value="${esc(g)}">`).join('')}</datalist>`,
+      onSubmit: async (f) => { await runBulk(ids, 'Gruppe', (id) => api('PATCH', `/api/devices/${id}`, { group: f.group.value })); done?.(); } });
+  } else if (kind === 'restart') {
+    if (!await confirmModal(`${ids.length} PCs neu starten?`, 'Die PCs starten in 1 Minute neu. Wer gerade daran sitzt, bekommt vorher einen Hinweis.', 'Neu starten', true)) return;
+    runBulk(ids, 'Neustart', cmdFor('power.restart', { delay: 60, message: 'Dein PC startet in einer Minute neu (Wartung durch Nicolaj Webdesign).' }));
+  }
+}
+
+// ---------- Schnellsuche (Strg + K) ----------
+function openPalette() {
+  if ($('.palette-wrap')) return;
+  const pages = [['Geräte', '#/', 'monitor'], ['Sicherheit', '#/security', 'shield'], ['Protokoll', '#/audit', 'history'], ['Einstellungen', '#/settings', 'sliders'], ['Gerät hinzufügen', 'add', 'plus']];
+  const wrap = document.createElement('div');
+  wrap.className = 'palette-wrap';
+  wrap.innerHTML = `<div class="palette" role="dialog" aria-label="Schnellsuche"><input class="input" id="pq" placeholder="Gerät, PC-ID oder Seite suchen …" autocomplete="off"><div class="p-list" id="pl" role="listbox"></div>
+    <div class="p-foot"><kbd>↑</kbd><kbd>↓</kbd> auswählen <kbd>Enter</kbd> öffnen <kbd>Esc</kbd> schließen</div></div>`;
+  document.body.append(wrap);
+  const q = $('#pq', wrap), pl = $('#pl', wrap);
+  let items = [], idx = 0;
+  const close = () => { wrap.remove(); document.removeEventListener('keydown', onKey, true); };
+  const go = (it) => { close(); if (it.href === 'add') addDeviceModal(); else location.hash = it.href; };
+  const draw = () => {
+    const f = q.value.trim().toLowerCase(), fd = f.replace(/\s+/g, '');
+    const devs = [...S.devices.values()].filter((d) => !f || [d.name, d.hostname, d.group, inv(d).loggedOnUser].join(' ').toLowerCase().includes(f) || (fd.length >= 2 && (d.pcId || '').includes(fd)))
+      .sort((a, b) => (b.online - a.online) || a.name.localeCompare(b.name, 'de')).slice(0, 8)
+      .map((d) => ({ label: d.name, sub: `${d.pending ? 'wartet auf Freigabe · ' : d.online ? 'online · ' : ''}ID ${fmtPCID(d.pcId)}${d.group ? ' · ' + d.group : ''}`, href: `#/d/${d.id}/overview`, ic: 'monitor', on: d.online }));
+    const pg = pages.filter(([l]) => !f || l.toLowerCase().includes(f)).map(([l, h, ic]) => ({ label: l, sub: 'Seite', href: h, ic }));
+    items = [...devs, ...pg];
+    idx = Math.min(idx, Math.max(0, items.length - 1));
+    pl.innerHTML = items.length ? items.map((it, i) => `<button type="button" class="p-item ${i === idx ? 'on' : ''}" data-i="${i}" role="option" aria-selected="${i === idx}">${icon(it.ic, 16)}<span><b>${esc(it.label)}</b><small>${esc(it.sub)}</small></span>${it.on ? '<i class="dot-on"></i>' : ''}</button>`).join('')
+      : '<p class="p-empty">Nichts gefunden.</p>';
+    $$('.p-item', pl).forEach((b) => { b.onclick = () => go(items[+b.dataset.i]); });
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); idx = Math.min(items.length - 1, idx + 1); draw(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); idx = Math.max(0, idx - 1); draw(); }
+    else if (e.key === 'Enter' && items[idx]) { e.preventDefault(); go(items[idx]); }
+  };
+  document.addEventListener('keydown', onKey, true);
+  wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); });
+  q.oninput = () => { idx = 0; draw(); };
+  draw();
+  q.focus();
+}
+
+// ---------- Zugangsanfragen ----------
+function requestsCard(pend) {
+  return `<section class="card req-card"><div class="req-head"><h2>Zugangsanfragen</h2><span class="muted">${pend.length} offen</span></div>
+    <p class="muted req-intro">Diese PCs haben den allgemeinen Installer benutzt. Sie können nichts, bis du sie annimmst. Abgelehnte PCs entfernen das Programm von selbst.</p>
+    ${pend.map((d) => `<div class="req-row">
+      <div class="dev-ico ${d.online ? 'on' : ''}">${icon('monitor', 18)}</div>
+      <div class="grow"><b>${esc(d.name)}</b>
+        <span class="small muted">${esc(d.hostname || '–')} · ${esc(osShort(d))} · ${esc(d.lastIp || '')} · angefragt ${esc(ago(d.requestedAt))}</span></div>
+      <button class="btn sm" data-rej="${esc(d.id)}">Ablehnen</button>
+      <button class="btn sm primary" data-acc="${esc(d.id)}">${icon('check', 15)} Annehmen</button>
+    </div>`).join('')}</section>`;
+}
+function bindRequests(root) {
+  $$('[data-acc]', root).forEach((b) => { b.onclick = (e) => { e.stopPropagation(); approveDevice(b.dataset.acc); }; });
+  $$('[data-rej]', root).forEach((b) => { b.onclick = (e) => { e.stopPropagation(); rejectDevice(b.dataset.rej); }; });
+}
+async function approveDevice(id) {
+  const d = S.devices.get(id);
+  try {
+    await api('POST', `/api/devices/${id}/approve`);
+    toast(`${d ? d.name : 'PC'} freigegeben`, 'ok', 'Du kannst den PC jetzt betreuen.');
+  } catch (ex) { toast('Freigabe fehlgeschlagen', 'error', ex.message); }
+}
+async function rejectDevice(id) {
+  const d = S.devices.get(id);
+  if (!await confirmModal('Anfrage ablehnen?', `„${esc(d ? d.name : 'PC')}“ wird abgelehnt. Das Programm entfernt sich danach auf dem PC von selbst.`, 'Ablehnen', true)) return;
+  try {
+    await api('POST', `/api/devices/${id}/reject`);
+    toast('Anfrage abgelehnt', 'info');
+  } catch (ex) { toast('Ablehnen fehlgeschlagen', 'error', ex.message); }
 }
 
 // ---------- Sicherheit: gemeinsame Bewertung ----------
@@ -592,6 +815,12 @@ class DeviceView {
       ${this.tab !== 'screen' ? `<a class="btn ${d.screenOnline ? 'primary' : ''}" href="#/d/${esc(d.id)}/screen">${icon('eye')} Bildschirm</a>` : ''}`;
     $('#cpid', head).onclick = () => copyText(d.pcId || '');
     const off = $('#offline', this.main);
+    if (d.pending) {
+      off.innerHTML = `<div class="callout accent offline-note">${icon('info')}<div style="flex:1"><b>Wartet auf Freigabe.</b> „${esc(d.name)}“ hat ${esc(ago(d.requestedAt))} Zugang angefragt. Bis du annimmst, kannst du hier nichts ausführen.</div>
+        <button class="btn sm" data-rej="${esc(d.id)}">Ablehnen</button><button class="btn sm primary" data-acc="${esc(d.id)}">${icon('check', 15)} Annehmen</button></div>`;
+      bindRequests(off);
+      return;
+    }
     off.innerHTML = d.online ? '' : `<div class="callout warn offline-note">${icon('alert')}<div>Der PC ist gerade offline. Aufträge werden gesammelt und ausgeführt, sobald er wieder online ist (bis zu 24 Stunden).</div></div>`;
   }
   async refresh() {
@@ -755,7 +984,7 @@ class ScreenTab {
         <div class="overlay" id="ovl"></div>
         <div class="kbd-hint" id="hint" hidden>Tastatur wird an den PC gesendet</div>
       </div>
-      <p class="small faint" style="margin-top:10px">Klick ins Bild, um Maus und Tastatur zu steuern. Die Person am PC sieht währenddessen eine rote Leiste und kann jederzeit trennen.</p>`;
+      <p class="small faint" style="margin-top:10px">Klick ins Bild, um Maus und Tastatur zu steuern. Die Person am PC sieht währenddessen oben eine Hinweisleiste und kann jederzeit trennen.</p>`;
     this.img = $('#img', el);
     this.viewer = $('#viewer', el);
     $('#conn', el).onclick = () => (this.session ? this.stop() : this.start());
@@ -777,8 +1006,7 @@ class ScreenTab {
     };
     this.bindInput();
     this.draw();
-    if (this.session) this.attach();
-    else if (this.v.dev.screenOnline) this.start();
+    if (this.session) this.attach(); // laufende Sitzung weiter anzeigen – neue nur per Klick auf „Verbinden“
   }
   active() { return this.session && this.session.state === 'active'; }
   async start() {
@@ -822,12 +1050,18 @@ class ScreenTab {
     ovl.hidden = false;
     if (this.session) {
       ovl.innerHTML = `<div><div class="spin" style="margin:0 auto 14px;width:28px;height:28px"></div><h2>Verbindung wird aufgebaut …</h2>
-        <p>${d.consentRequired ? 'Am PC erscheint eine Frage, ob du dich verbinden darfst. Die Person muss auf „Ja“ klicken.' : 'Einen Moment.'}</p></div>`;
+        <p>${d.consentRequired ? 'Am PC erscheint jetzt die Frage, ob du dich verbinden darfst. Die Person muss auf „Erlauben“ klicken.' : 'Einen Moment.'}</p></div>`;
     } else if (!d.screenOnline) {
       ovl.innerHTML = `<div><h2>Bildschirm nicht verfügbar</h2><p>${d.online ? 'Gerade ist niemand am PC angemeldet. Der Bildschirm ist erst nach der Windows-Anmeldung verfügbar.' : 'Der PC ist offline.'}</p></div>`;
     } else {
-      ovl.innerHTML = `<div><h2>${this.message ? esc(this.message) : 'Bereit'}</h2><p>${d.consentRequired ? 'Die Person am PC wird um Erlaubnis gefragt.' : 'Verbindung ohne Rückfrage (in den Einstellungen änderbar).'}</p>
-        <button class="btn primary lg" id="conn2">${icon('play')} Verbinden</button></div>`;
+      const again = !!this.message;
+      ovl.innerHTML = `<div class="screen-idle">
+        <div class="screen-idle-icon">${icon('monitor', 26)}</div>
+        <h2>${again ? esc(this.message) : `Bildschirm von ${esc(d.name)}`}</h2>
+        <p>${d.consentRequired
+          ? 'Erst wenn du auf „Verbinden“ klickst, erscheint am PC eine Frage. Die Person muss sie mit „Erlauben“ bestätigen.'
+          : 'Verbindet sofort ohne Rückfrage – am PC erscheint nur die Hinweisleiste.'}</p>
+        <button class="btn primary lg" id="conn2">${icon('play')} ${again ? 'Nochmal verbinden' : 'Verbinden'}</button></div>`;
       $('#conn2', ovl).onclick = () => this.start();
     }
   }
@@ -1354,11 +1588,21 @@ class ShellTab {
       <section class="card card-pad"><form id="sf" class="form-grid">
         <textarea class="input console" name="script" spellcheck="false" placeholder="z. B. Get-Service | Where-Object Status -eq 'Running'" required></textarea>
         <div class="row"><select class="input" id="snip" style="width:auto"><option value="">Vorlage einfügen …</option>${SNIPPETS.map(([n], i) => `<option value="${i}">${esc(n)}</option>`).join('')}</select>
+          <select class="input" id="mine" style="width:auto" hidden></select>
+          <button type="button" class="btn ghost" id="save">${icon('plus', 15)} Speichern</button>
           <select class="input" name="timeout" style="width:auto" title="Maximale Laufzeit"><option value="60">max. 1 Min.</option><option value="300" selected>max. 5 Min.</option><option value="1800">max. 30 Min.</option></select>
           <span class="spacer"></span><span class="faint small">Strg + Enter</span><button class="btn primary">${icon('play')} Ausführen</button></div></form></section>
       <div id="hist" class="section"></div>`;
     const f = $('#sf', el);
     $('#snip', el).onchange = (e) => { if (e.target.value !== '') { f.script.value = SNIPPETS[+e.target.value][1]; e.target.value = ''; f.script.focus(); } };
+    $('#save', el).onclick = () => {
+      if (!f.script.value.trim()) { toast('Erst ein Skript eingeben', 'info'); return; }
+      openModal({ title: 'Skript speichern', submitLabel: 'Speichern',
+        body: `<label class="field">Name<input class="input" name="name" maxlength="40" required placeholder="z. B. Druckerwarteschlange leeren"></label>
+          <p class="small faint" style="margin:8px 0 0">Gespeicherte Skripte kannst du auf jedem PC einfügen – und unter „Geräte › Auswählen“ auf vielen PCs gleichzeitig ausführen. Gleicher Name überschreibt.</p>`,
+        onSubmit: async (m) => { await api('POST', '/api/scripts', { name: m.name.value, script: f.script.value }); toast('Skript gespeichert', 'ok'); this.loadScripts(); } });
+    };
+    this.loadScripts();
     f.script.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); f.requestSubmit(); } };
     f.onsubmit = (e) => {
       e.preventDefault();
@@ -1366,6 +1610,33 @@ class ShellTab {
       this.v.cmd('script.run', { script: f.script.value, timeout: +f.timeout.value }, { quiet: true });
     };
     this.update();
+  }
+  async loadScripts() {
+    const sel = $('#mine', this.el);
+    if (!sel) return;
+    this.scripts = await api('GET', '/api/scripts').catch(() => []);
+    sel.hidden = !this.scripts.length;
+    sel.innerHTML = `<option value="">Meine Skripte (${this.scripts.length}) …</option>${this.scripts.map((x, i) => `<option value="${i}">${esc(x.name)}</option>`).join('')}<option value="manage">Verwalten …</option>`;
+    sel.onchange = () => {
+      const v = sel.value;
+      sel.value = '';
+      if (v === 'manage') return this.manageScripts();
+      if (v !== '') { const f = $('#sf', this.el); f.script.value = this.scripts[+v].script; f.script.focus(); }
+    };
+  }
+  manageScripts() {
+    const row = (x) => `<div class="req-row"><div class="grow"><b>${esc(x.name)}</b><span class="small muted">${esc(x.createdBy)} · ${esc(fmtDate(x.createdAt))}</span></div>
+      <button type="button" class="btn sm danger" data-del="${esc(x.id)}">${icon('trash', 14)} Löschen</button></div>`;
+    openModal({ title: 'Meine Skripte', footer: '<button type="button" class="btn primary" data-close>Fertig</button>',
+      body: `<div id="sl">${this.scripts.map(row).join('') || '<p class="muted">Noch keine Skripte gespeichert.</p>'}</div>`,
+      onOpen: (m) => {
+        m.addEventListener('click', async (e) => {
+          const b = e.target.closest('[data-del]');
+          if (!b) return;
+          try { await api('DELETE', `/api/scripts/${b.dataset.del}`); b.closest('.req-row').remove(); toast('Skript gelöscht', 'ok'); this.loadScripts(); }
+          catch (ex) { toast('Fehler', 'error', ex.message); }
+        });
+      } });
   }
   update() {
     const list = this.v.cmds.filter((c) => c.type === 'script.run').slice(0, 20);
@@ -1418,11 +1689,13 @@ class SettingsTab {
     el.innerHTML = `<div class="settings-grid">
       <section class="card card-pad"><form id="f" class="form-grid">
         <h2>Allgemein</h2>
-        <label class="field">Name<input class="input" name="name" maxlength="64" value="${esc(d.name)}"></label>
+        <div class="form-grid two"><label class="field">Name<input class="input" name="name" maxlength="64" value="${esc(d.name)}"></label>
+          <label class="field">Gruppe <span class="hint">z. B. Familie, Kunden</span><input class="input" name="group" maxlength="30" list="grplist" value="${esc(d.group || '')}"></label></div>
+        <datalist id="grplist">${[...new Set([...S.devices.values()].map((x) => x.group).filter(Boolean))].map((g) => `<option value="${esc(g)}">`).join('')}</datalist>
         <label class="field">Notizen <span class="hint">nur für dich sichtbar</span><textarea class="input" name="notes" rows="3" maxlength="4000" placeholder="z. B. Drucker: HP DeskJet im Flur, WLAN-Passwort liegt …">${esc(d.notes)}</textarea></label>
         <label class="check"><input type="checkbox" name="tester" ${d.updateTester ? 'checked' : ''}> <span>Testgerät für Updates<small>Bekommt neue Agent-Versionen zuerst – ideal ist dein eigener PC.</small></span></label>
         <label class="check"><input type="checkbox" name="security" ${d.securityEnabled ? 'checked' : ''}> <span>Sicherheitspaket<small>Virenschutz überwachen, Scans und Härtung aus dem Dashboard, Alarm bei Bedrohungen. Nutzt den in Windows eingebauten Microsoft Defender.</small></span></label>
-        <label class="check"><input type="checkbox" name="consent" ${d.consentRequired ? 'checked' : ''}> <span>Vor dem Fernsteuern um Erlaubnis fragen<small>Empfohlen bei Familie und Kunden. Ohne Häkchen verbindest du dich direkt – die rote Leiste erscheint trotzdem immer.</small></span></label>
+        <label class="check"><input type="checkbox" name="consent" ${d.consentRequired ? 'checked' : ''}> <span>Vor dem Fernsteuern um Erlaubnis fragen<small>Empfohlen bei Familie und Kunden. Ohne Häkchen verbindest du dich direkt – die Hinweisleiste am PC erscheint trotzdem immer.</small></span></label>
         <div><button class="btn primary">Speichern</button></div></form></section>
       <section class="card card-pad"><h2 style="margin-bottom:12px">Agent</h2><dl class="kv">
         <dt>Version</dt><dd>${esc(d.agentVersion || '–')} ${isOutdated(d) ? `<span class="badge warn">Update auf ${esc(S.info.agentLatest)}</span> <button type="button" class="btn sm" id="agup" ${d.online ? '' : 'disabled'}>Jetzt aktualisieren</button>` : d.agentVersion ? '<span class="badge accent">aktuell</span>' : ''}</dd><dt>Hinzugefügt</dt><dd>${esc(fmtDate(d.enrolledAt))}</dd>
@@ -1436,7 +1709,7 @@ class SettingsTab {
       e.preventDefault();
       const f = e.target;
       try {
-        await api('PATCH', `/api/devices/${d.id}`, { name: f.name.value, notes: f.notes.value, consentRequired: f.consent.checked, securityEnabled: f.security.checked, updateTester: f.tester.checked });
+        await api('PATCH', `/api/devices/${d.id}`, { name: f.name.value, group: f.group.value, notes: f.notes.value, consentRequired: f.consent.checked, securityEnabled: f.security.checked, updateTester: f.tester.checked });
         toast('Gespeichert', 'ok');
       } catch (ex) { toast('Fehler', 'error', ex.message); }
     };
@@ -1490,6 +1763,7 @@ class SettingsView {
         <label class="field">Aktuelles Passwort<input class="input" type="password" name="current" required autocomplete="current-password"></label>
         <label class="field">Neues Passwort<input class="input" type="password" name="new" minlength="10" required autocomplete="new-password"><span class="hint">Mindestens 10 Zeichen.</span></label>
         <div><button class="btn primary">Ändern</button></div></form></section>
+      <section class="card card-pad" id="reqs"></section>
       <section class="card card-pad" id="upd"></section>
       <section class="card card-pad" id="gh"></section>
       <section class="card card-pad" id="srv"></section>
@@ -1501,10 +1775,28 @@ class SettingsView {
       catch (ex) { toast('Fehler', 'error', ex.message); }
     };
     this.drawTfa();
+    this.drawRequests();
     this.drawUpdates();
     this.drawGitHub();
     this.drawServer();
     this.drawCodes();
+  }
+  async drawRequests() {
+    const box = $('#reqs', this.main);
+    let r;
+    try { r = await api('GET', '/api/requests/settings'); } catch (e) { box.innerHTML = `<p class="muted">${esc(e.message)}</p>`; return; }
+    box.innerHTML = `<div class="row" style="margin-bottom:6px"><h2>Website &amp; Zugangsanfragen</h2><span class="spacer"></span>
+        <span class="pill ${r.enabled ? 'ok' : ''}">${r.enabled ? 'an' : 'aus'}</span></div>
+      <p class="muted" style="margin:0 0 14px">Auf deiner Website kann sich jeder den Installer holen, seinen Namen eingeben und Zugang anfragen. Neue Anfragen erscheinen oben in der Geräteliste – erst nach „Annehmen“ kannst du etwas auf dem PC tun.</p>
+      <div class="input-group" style="margin-bottom:14px"><input class="input mono" id="rlink" readonly value="${esc(r.link)}"><button class="btn" id="rcopy" type="button">${icon('copy')} Kopieren</button><a class="btn" href="/" target="_blank" rel="noopener">Öffnen</a></div>
+      <label class="check"><input type="checkbox" id="ren" ${r.enabled ? 'checked' : ''}> <span>Download und Zugangsanfragen erlauben<small>Aus = die Website zeigt keinen Download, neue Anfragen werden abgelehnt. Installer mit Einrichtungscode funktionieren weiter.</small></span></label>
+      ${r.agentAvailable ? '' : '<p class="small" style="color:var(--warn);margin:10px 0 0">Im Server ist noch kein Agent enthalten – der Download funktioniert erst nach einem Release.</p>'}`;
+    $('#rcopy', box).onclick = () => copyText(r.link);
+    $('#ren', box).onchange = async (e) => {
+      try { await api('POST', '/api/requests/settings', { enabled: e.target.checked }); toast(e.target.checked ? 'Zugangsanfragen an' : 'Zugangsanfragen aus', 'ok'); }
+      catch (ex) { toast('Fehler', 'error', ex.message); }
+      this.drawRequests();
+    };
   }
   async drawGitHub() {
     const box = $('#gh', this.main);

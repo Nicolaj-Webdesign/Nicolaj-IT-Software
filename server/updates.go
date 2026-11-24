@@ -25,6 +25,8 @@ type Settings struct {
 	GitHubToken   string `json:"githubToken,omitempty"`   // nur für private Repos (Leserecht „Contents“)
 	GitHubAuto    bool   `json:"githubAuto"`              // neue Agent-Versionen automatisch übernehmen
 	ReleasePubKey string `json:"releasePubKey,omitempty"` // Ed25519, verlangt signierte Releases
+
+	DisableRequests bool `json:"disableRequests,omitempty"` // allgemeiner Installer: keine Zugangsanfragen annehmen
 }
 
 // AgentPkg ist eine Agent-Version, die der Server an die PCs verteilt.

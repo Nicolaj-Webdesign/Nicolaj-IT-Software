@@ -44,15 +44,20 @@ func runSim(args []string) {
 	code := fs.String("code", "", "Einrichtungscode")
 	fp := fs.String("fp", "", "Fingerabdruck des Server-Zertifikats")
 	dir := fs.String("dir", "sim-data", "Ordner für die Simulations-Konfiguration")
+	person := fs.String("request", "", "statt Code: Zugang anfragen mit diesem Namen")
 	fs.Parse(args)
 	simDir = *dir
 	os.MkdirAll(simDir, 0o700)
 	if _, err := loadConfig(agentConfigPath()); err != nil {
-		if *code == "" {
-			fmt.Println("Bitte --code angeben.")
+		if *code == "" && *person == "" {
+			fmt.Println("Bitte --code oder --request NAME angeben.")
 			os.Exit(1)
 		}
-		a, s, name, err := enroll(*server, *code, *fp)
+		reg := func() (Config, Config, string, error) { return enroll(*server, *code, *fp) }
+		if *person != "" {
+			reg = func() (Config, Config, string, error) { return requestAccess(*server, *fp, *person) }
+		}
+		a, s, name, err := reg()
 		if err != nil {
 			fmt.Println("Anmeldung fehlgeschlagen:", err)
 			os.Exit(1)
@@ -436,3 +441,5 @@ func showOverlay(by string, onDisconnect func()) closer {
 }
 func showMessage(text string) { logf("(Simulation) Nachricht: %s", text) }
 func lockScreen() error       { logf("(Simulation) Bildschirm gesperrt"); return nil }
+
+func selfUninstall() { logf("Simulation: Agent würde sich jetzt selbst entfernen."); os.Exit(0) }

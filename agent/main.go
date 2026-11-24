@@ -37,11 +37,16 @@ import (
 )
 
 // Version und Kennung werden beim Bauen gesetzt (build.sh liest die Datei VERSION bzw. den Git-Tag):
-//   -ldflags "-X main.agentVersion=0.5.0 -X main.buildMarker=NRMM-AGENT-VERSION:0.5.0:END"
+//
+//	-ldflags "-X main.agentVersion=0.5.0 -X main.buildMarker=NRMM-AGENT-VERSION:0.5.0:END"
+//
 // buildMarker lässt den Server die Version direkt aus der .exe lesen (für Updates).
 var (
 	agentVersion = "dev"
 	buildMarker  = "dev"
+	// defaultServer: Serveradresse für den allgemeinen Installer ohne angehängte Daten
+	// (z. B. direkt aus dem GitHub-Release). Per -ldflags "-X main.defaultServer=https://…".
+	defaultServer = ""
 )
 
 func main() {
@@ -119,6 +124,7 @@ type Payload struct {
 	Code        string `json:"code"`
 	Fingerprint string `json:"fingerprint"`
 	Label       string `json:"label"`
+	Request     bool   `json:"request"` // allgemeiner Installer: Name eingeben, Zugang anfragen
 }
 
 // readPayload liest die angehängten Daten und gibt die Größe der eigentlichen .exe zurück.
@@ -180,7 +186,12 @@ func logf(format string, a ...any) { logger.Printf(format, a...) }
 
 // ---------- Verbindung zum Server ----------
 
-var errUnauthorized = errors.New("Schlüssel abgelehnt")
+var (
+	errUnauthorized = errors.New("Schlüssel abgelehnt")
+	errRejected     = errors.New("Zugangsanfrage abgelehnt")
+	// onRejected: was passieren soll, wenn der Server die Zugangsanfrage abgelehnt hat.
+	onRejected func()
+)
 
 type Client struct {
 	cfg    Config
@@ -328,6 +339,9 @@ func (c *Client) listen(ctx context.Context, onEvent func(ev string, data []byte
 	if resp.StatusCode == 401 {
 		return errUnauthorized
 	}
+	if resp.StatusCode == 410 {
+		return errRejected
+	}
 	if resp.StatusCode != 200 {
 		return apiError(resp)
 	}
@@ -375,6 +389,14 @@ func runLoop(c *Client, name string, onEvent func(string, []byte), onOpen func()
 		start := time.Now()
 		logf("%s: verbinde mit %s", name, c.cfg.Server)
 		err := c.listen(context.Background(), onEvent, onOpen)
+		if errors.Is(err, errRejected) {
+			logf("%s: Die Zugangsanfrage wurde abgelehnt.", name)
+			if onRejected != nil {
+				onRejected()
+			}
+			time.Sleep(time.Hour)
+			continue
+		}
 		if errors.Is(err, errUnauthorized) {
 			logf("%s: Der Server kennt diesen PC nicht mehr (im Dashboard gelöscht?). Neuer Versuch in 10 Minuten.", name)
 			time.Sleep(10 * time.Minute)
@@ -392,6 +414,15 @@ func runLoop(c *Client, name string, onEvent func(string, []byte), onOpen func()
 // ---------- Anmeldung beim Server ----------
 
 func enroll(server, code, fp string) (agentCfg, screenCfg Config, name string, err error) {
+	return register(server, fp, "/api/agent/enroll", map[string]string{"code": code})
+}
+
+// requestAccess: allgemeiner Installer – meldet den PC mit Namen an, Freigabe im Dashboard.
+func requestAccess(server, fp, person string) (agentCfg, screenCfg Config, name string, err error) {
+	return register(server, fp, "/api/agent/request", map[string]string{"name": person})
+}
+
+func register(server, fp, path string, extra map[string]string) (agentCfg, screenCfg Config, name string, err error) {
 	server = strings.TrimRight(strings.TrimSpace(server), "/")
 	c := newClient(Config{Server: server, Fingerprint: fp})
 	host, _ := os.Hostname()
@@ -402,9 +433,11 @@ func enroll(server, code, fp string) (agentCfg, screenCfg Config, name string, e
 		ScreenToken string `json:"screenToken"`
 		Name        string `json:"name"`
 	}
-	err = c.postJSON("/api/agent/enroll", map[string]string{
-		"code": code, "hostname": host, "os": runtime.GOOS, "version": agentVersion,
-	}, &res)
+	body := map[string]string{"hostname": host, "os": runtime.GOOS, "version": agentVersion}
+	for k, v := range extra {
+		body[k] = v
+	}
+	err = c.postJSON(path, body, &res)
 	if err != nil {
 		return
 	}
@@ -452,6 +485,8 @@ func runService() {
 	}
 	c := newClient(cfg)
 	logf("Dienst %s gestartet (Gerät %s)", agentVersion, cfg.DeviceID)
+	var rejectOnce sync.Once
+	onRejected = func() { rejectOnce.Do(selfUninstall) } // abgelehnte Anfrage: Programm entfernt sich selbst
 
 	go func() {
 		time.Sleep(3 * time.Second)

@@ -3,3 +3,4 @@ data/
 sim-data/
 server/assets/nicolaj-agent.exe
 *.exe
+agent/rsrc_windows_amd64.syso

@@ -51,7 +51,11 @@ jobs:
       - name: Tests
         run: go test ./agent
 
+      # Repository-Variable NRMM_SERVER_URL (z. B. https://rmm.nicolaj-webdesign.de): Dann ist die
+      # nicolaj-agent.exe im Release ein „Zugang anfragen“-Installer für genau diesen Server.
       - name: Agent bauen
+        env:
+          DEFAULT_SERVER: ${{ vars.NRMM_SERVER_URL }}
         run: bash ./build.sh agent
 
       # ---------- Optional: Code-Signatur mit Microsoft Artifact Signing ----------

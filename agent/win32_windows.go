@@ -173,7 +173,7 @@ func msgBoxTimeout(text string, flags uintptr, timeout time.Duration) int {
 	return int(r)
 }
 
-func askConsent(ctx context.Context, by string) bool {
+func askConsentClassic(ctx context.Context, by string) bool {
 	text := "Nicolaj Support (" + by + ") möchte sich mit deinem Bildschirm verbinden, um dir zu helfen.\n\n" +
 		"Dabei kann dein Bildschirm gesehen und Maus und Tastatur können gesteuert werden. " +
 		"Solange die Verbindung besteht, siehst du oben eine rote Leiste – dort kannst du jederzeit trennen.\n\n" +
@@ -191,7 +191,7 @@ func askConsent(ctx context.Context, by string) bool {
 	}
 }
 
-func showMessage(text string) {
+func showMessageClassic(text string) {
 	go func() {
 		runtime.LockOSThread()
 		procMessageBoxW.Call(0, uintptr(unsafe.Pointer(utf16Ptr(text))),
@@ -635,7 +635,7 @@ func (o *overlayWin) Close() {
 	}
 }
 
-func showOverlay(by string, onDisconnect func()) closer {
+func showOverlayClassic(by string, onDisconnect func()) closer {
 	o := &overlayWin{done: make(chan struct{})}
 	ready := make(chan uintptr, 1)
 	go func() {

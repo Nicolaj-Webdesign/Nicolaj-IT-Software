@@ -525,12 +525,9 @@ func execCommand(ctx context.Context, cmd Cmd) Result {
 		return Result{OK: true, Output: out}
 
 	case "agent.uninstall":
-		exe, _ := os.Executable()
 		go func() {
 			time.Sleep(2 * time.Second)
-			c := exec.Command(exe, "uninstall", "--quiet")
-			c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000 | 0x00000200}
-			c.Start()
+			selfUninstall()
 		}()
 		return Result{OK: true, Output: "Der Agent wird jetzt entfernt. Das Gerät verschwindet danach aus dem Dashboard."}
 	}
@@ -560,4 +557,14 @@ func collectInventory() json.RawMessage {
 		logf("Systeminfo: %v", err)
 	}
 	return data
+}
+
+// selfUninstall startet die stille Deinstallation in einem eigenen Prozess.
+func selfUninstall() {
+	exe, _ := os.Executable()
+	c := exec.Command(exe, "uninstall", "--quiet")
+	c.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000 | 0x00000200}
+	if err := c.Start(); err != nil {
+		logf("Deinstallation konnte nicht gestartet werden: %v", err)
+	}
 }

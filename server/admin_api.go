@@ -23,6 +23,7 @@ func deviceView(dev *Device, ls liveState, full bool) map[string]any {
 		"enrolledAt": dev.EnrolledAt, "lastSeen": dev.LastSeen, "lastIp": dev.LastIP,
 		"online": ls.Agent, "screenOnline": ls.Screen, "session": ls.Session,
 		"inventory": dev.Inventory, "inventoryAt": dev.InventoryAt,
+		"pending": dev.Pending, "requestedAt": dev.RequestedAt, "group": dev.Group,
 	}
 	if len(dev.Inventory) == 0 {
 		v["inventory"] = nil
@@ -84,6 +85,7 @@ func (a *App) apiDeviceUpdate(w http.ResponseWriter, r *http.Request, user strin
 	var req struct {
 		Name            *string `json:"name"`
 		Notes           *string `json:"notes"`
+		Group           *string `json:"group"`
 		ConsentRequired *bool   `json:"consentRequired"`
 		SecurityEnabled *bool   `json:"securityEnabled"`
 		UpdateTester    *bool   `json:"updateTester"`
@@ -104,6 +106,16 @@ func (a *App) apiDeviceUpdate(w http.ResponseWriter, r *http.Request, user strin
 			if n != "" && len([]rune(n)) <= 64 && n != dev.Name {
 				changes = append(changes, fmt.Sprintf("Name: „%s“ → „%s“", dev.Name, n))
 				dev.Name = n
+			}
+		}
+		if req.Group != nil {
+			g := cleanName(*req.Group)
+			if len([]rune(g)) > 30 {
+				g = string([]rune(g)[:30])
+			}
+			if g != dev.Group {
+				changes = append(changes, fmt.Sprintf("Gruppe: „%s“", map[bool]string{true: "keine", false: g}[g == ""]))
+				dev.Group = g
 			}
 		}
 		if req.Notes != nil && len(*req.Notes) <= 4000 && *req.Notes != dev.Notes {
@@ -197,14 +209,18 @@ func (a *App) apiCreateCommand(w http.ResponseWriter, r *http.Request, user stri
 		writeErr(w, 400, err.Error())
 		return
 	}
-	exists, secOn := false, false
+	exists, secOn, pending := false, false, false
 	a.store.View(func(d *DBData) {
 		if dev := d.Devices[devID]; dev != nil {
-			exists, secOn = true, dev.SecurityEnabled
+			exists, secOn, pending = true, dev.SecurityEnabled, dev.Pending
 		}
 	})
 	if !exists {
 		writeErr(w, 404, "Gerät nicht gefunden.")
+		return
+	}
+	if pending {
+		writeErr(w, 409, pendingMsg)
 		return
 	}
 	if strings.HasPrefix(req.Type, "security.") && !secOn {
@@ -271,14 +287,18 @@ func (a *App) apiScreenStart(w http.ResponseWriter, r *http.Request, user string
 	if !qualities[req.Quality] {
 		req.Quality = "medium"
 	}
-	var consent, exists bool
+	var consent, exists, pending bool
 	a.store.View(func(d *DBData) {
 		if dev := d.Devices[devID]; dev != nil {
-			exists, consent = true, dev.ConsentRequired
+			exists, consent, pending = true, dev.ConsentRequired, dev.Pending
 		}
 	})
 	if !exists {
 		writeErr(w, 404, "Gerät nicht gefunden.")
+		return
+	}
+	if pending {
+		writeErr(w, 409, pendingMsg)
 		return
 	}
 	if _, screenOn := a.hub.Online(devID); !screenOn {

@@ -173,7 +173,7 @@ func (a *App) printBanner() {
 	fmt.Printf("\n  nicolaj▍ Fernwartung – Server %s\n\n", serverVersion)
 	fmt.Println("  Dashboard im Browser öffnen:")
 	for _, u := range a.serverURLs(scheme) {
-		fmt.Println("    " + u)
+		fmt.Println("    " + u + "/admin")
 	}
 	if a.behindProxy && a.publicURL == "" {
 		fmt.Println("\n  Hinweis: NRMM_PUBLIC_URL ist nicht gesetzt (z. B. https://rmm.nicolaj-webdesign.de).")
@@ -231,7 +231,11 @@ func (a *App) routes() *http.ServeMux {
 	m := http.NewServeMux()
 
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })
-	m.HandleFunc("GET /{$}", a.static("web/index.html", "text/html; charset=utf-8"))
+	m.HandleFunc("GET /{$}", a.publicSite)
+	m.HandleFunc("GET /admin", a.static("web/index.html", "text/html; charset=utf-8"))
+	m.HandleFunc("GET /admin/{$}", a.static("web/index.html", "text/html; charset=utf-8"))
+	m.HandleFunc("GET /site.css", a.static("web/site.css", "text/css; charset=utf-8"))
+	m.HandleFunc("GET /installer.png", a.static("web/installer.png", "image/png"))
 	m.HandleFunc("GET /app.js", a.static("web/app.js", "text/javascript; charset=utf-8"))
 	m.HandleFunc("GET /app.css", a.static("web/app.css", "text/css; charset=utf-8"))
 	m.HandleFunc("GET /logo.svg", a.static("web/logo.svg", "image/svg+xml"))
@@ -239,6 +243,10 @@ func (a *App) routes() *http.ServeMux {
 
 	// Schnittstelle für die Agents
 	m.HandleFunc("POST /api/agent/enroll", a.agentEnroll)
+	m.HandleFunc("POST /api/agent/request", a.agentRequest)
+	m.HandleFunc("GET /download", a.publicDownloadPage)
+	m.HandleFunc("GET /setup", a.publicDownloadPage)
+	m.HandleFunc("GET /download/Nicolaj-Fernwartung.exe", a.publicDownload)
 	m.HandleFunc("GET /api/agent/events", a.agentAuth(a.agentEvents))
 	m.HandleFunc("POST /api/agent/result", a.agentAuth(a.agentResult))
 	m.HandleFunc("POST /api/agent/inventory", a.agentAuth(a.agentInventory))
@@ -264,6 +272,13 @@ func (a *App) routes() *http.ServeMux {
 	m.HandleFunc("GET /api/devices/{id}", a.admin(a.apiDevice))
 	m.HandleFunc("PATCH /api/devices/{id}", a.admin(a.apiDeviceUpdate))
 	m.HandleFunc("DELETE /api/devices/{id}", a.admin(a.apiDeviceDelete))
+	m.HandleFunc("POST /api/devices/{id}/approve", a.admin(a.apiDeviceApprove))
+	m.HandleFunc("POST /api/devices/{id}/reject", a.admin(a.apiDeviceReject))
+	m.HandleFunc("GET /api/requests/settings", a.admin(a.apiRequestSettings))
+	m.HandleFunc("GET /api/scripts", a.admin(a.apiScripts))
+	m.HandleFunc("POST /api/scripts", a.admin(a.apiSaveScript))
+	m.HandleFunc("DELETE /api/scripts/{id}", a.admin(a.apiDeleteScript))
+	m.HandleFunc("POST /api/requests/settings", a.admin(a.apiRequestSettings))
 	m.HandleFunc("GET /api/devices/{id}/commands", a.admin(a.apiDeviceCommands))
 	m.HandleFunc("POST /api/devices/{id}/commands", a.admin(a.apiCreateCommand))
 	m.HandleFunc("POST /api/commands/{id}/cancel", a.admin(a.apiCancelCommand))
@@ -352,6 +367,9 @@ func (a *App) agentAuth(h agentHandler) http.HandlerFunc {
 		a.store.View(func(d *DBData) {
 			dev := d.Devices[devID]
 			if dev == nil {
+				if _, gone := d.Rejected[devID]; gone {
+					role = "rejected"
+				}
 				return
 			}
 			switch {
@@ -361,6 +379,10 @@ func (a *App) agentAuth(h agentHandler) http.HandlerFunc {
 				role = "screen"
 			}
 		})
+		if role == "rejected" {
+			writeErr(w, 410, "Die Zugangsanfrage wurde abgelehnt.")
+			return
+		}
 		if role == "" {
 			writeErr(w, 401, "Kein gültiger Agent-Schlüssel.")
 			return

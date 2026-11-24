@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -25,17 +27,29 @@ const (
 	uninstKey  = `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\NicolajRMM`
 )
 
-// runDefault: Doppelklick auf die .exe. Mit eingebautem Code → Installation.
+// runDefault: Doppelklick auf die .exe. Mit eingebautem Code → Installation, mit „request“
+// (allgemeiner Installer von der Website) → Namen eingeben und Zugang anfragen.
 func runDefault() {
 	exe, _ := os.Executable()
 	p, base, err := readPayload(exe)
+	if err == nil && p == nil && defaultServer != "" {
+		p = &Payload{Server: defaultServer, Request: true}
+	}
 	if err != nil || p == nil {
-		msgBox("Das ist der Agent von Nicolaj Fernwartung.\n\n"+
-			"Zum Installieren bitte den Installer aus dem Dashboard herunterladen (Gerät hinzufügen) "+
-			"oder per Kommandozeile:\n\nnicolaj-agent.exe install --server https://SERVER:8443 --code CODE --fp FINGERABDRUCK", mbIconInfo)
+		uiNotice("Das ist der Agent von Nicolaj Fernwartung",
+			"Den Installer bekommst du auf der Website von Nicolaj Webdesign oder im Dashboard unter „Gerät hinzufügen“.", "info")
 		return
 	}
-	doInstall(exe, base, p.Server, p.Code, p.Fingerprint, true, nil)
+	// Fortsetzung nach der Windows-Abfrage (Administratorrechte): --go [--name NAME]
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	goOn := fs.Bool("go", false, "")
+	person := fs.String("name", "", "")
+	fs.Parse(os.Args[1:])
+	if p.Request {
+		requestInstallUI(exe, base, p.Server, p.Fingerprint, *person, *goOn)
+		return
+	}
+	codeInstallUI(exe, base, p.Server, p.Code, p.Fingerprint, *goOn, []string{"--go"})
 }
 
 func runInstallCLI(args []string) {
@@ -44,62 +58,174 @@ func runInstallCLI(args []string) {
 	code := fs.String("code", "", "Einrichtungscode aus dem Dashboard")
 	fp := fs.String("fp", "", "Fingerabdruck (SHA-256) des Server-Zertifikats")
 	quiet := fs.Bool("quiet", false, "keine Rückfragen")
+	goOn := fs.Bool("go", false, "")
 	if err := fs.Parse(args); err != nil || *server == "" || *code == "" {
-		msgBox("Aufruf:\nnicolaj-agent.exe install --server https://SERVER:8443 --code CODE --fp FINGERABDRUCK", mbIconWarning)
+		uiNotice("Falscher Aufruf", "nicolaj-agent.exe install --server https://SERVER --code CODE [--fp FINGERABDRUCK] [--quiet]", "warn")
 		return
 	}
 	exe, _ := os.Executable()
 	_, base, _ := readPayload(exe)
-	doInstall(exe, base, *server, *code, *fp, !*quiet, append([]string{"install"}, args...))
+	if *quiet {
+		if !isAdmin() {
+			relaunchElevated(exe, append([]string{"install"}, args...))
+			return
+		}
+		installWith(exe, base, func() (Config, Config, string, error) { return enroll(*server, *code, *fp) }, nil)
+		return
+	}
+	relaunch := []string{"install", "--server", *server, "--code", *code, "--fp", *fp, "--go"}
+	codeInstallUI(exe, base, *server, *code, *fp, *goOn, relaunch)
 }
 
-func doInstall(exe string, base int64, server, code, fp string, interactive bool, args []string) {
+// installFlow: gemeinsamer Ablauf beider Installer (Fenster, Administratorrechte, Fortschritt).
+type installFlow struct {
+	exe      string
+	base     int64
+	server   string
+	welcome  func(problem string) *uiDialog
+	reg      func() (Config, Config, string, error)
+	done     func(name, pcID string) *uiDialog
+	relaunch func() []string
+	ready    func() bool // darf „Installieren“ gedrückt werden?
+	onInput  func(ctl *uiCtl)
+}
+
+func (f *installFlow) run(startNow bool) {
+	work := func(ctl *uiCtl) {
+		ctl.Set(dlgInstallProgress(1, 0.12))
+		name, pcID, err := installWith(f.exe, f.base, f.reg, func(step int) {
+			ctl.Set(dlgInstallProgress(step, float64(step)/float64(len(installSteps)-1)))
+		})
+		if err != nil {
+			ctl.Set(dlgInstallError(err.Error()))
+			return
+		}
+		ctl.Set(dlgInstallProgress(len(installSteps)-1, 1))
+		time.Sleep(450 * time.Millisecond)
+		ctl.Set(f.done(name, pcID))
+	}
+	var busy atomic.Bool
+	opts := uiOpts{Animate: true, OnClick: func(ctl *uiCtl, id string) bool {
+		switch id {
+		case "install", "request", "retry":
+			if (f.ready != nil && !f.ready()) || !busy.CompareAndSwap(false, true) {
+				return false
+			}
+			if isAdmin() {
+				go func() { work(ctl); busy.Store(false) }()
+				return false
+			}
+			ctl.Set(dlgInstallProgress(0, 0.04))
+			go func() {
+				if relaunchElevated(f.exe, f.relaunch()) {
+					ctl.Close("elevated") // der Prozess mit Administratorrechten übernimmt
+					return
+				}
+				busy.Store(false)
+				ctl.Set(f.welcome("Ohne deine Bestätigung kann nicht installiert werden. Bitte nochmal versuchen und bei Windows auf „Ja“ klicken."))
+			}()
+			return false
+		case "input-changed":
+			if f.onInput != nil {
+				f.onInput(ctl)
+			}
+			return false
+		case "close", "cancel", "ok":
+			return !busy.Load() || id == "ok"
+		}
+		return false
+	}}
+	first := f.welcome("")
+	if startNow && isAdmin() {
+		first = dlgInstallProgress(1, 0.12)
+		opts.Ready = func(ctl *uiCtl) { busy.Store(true); work(ctl); busy.Store(false) }
+	}
+	if _, err := runUI(first, opts); err != nil {
+		f.classic()
+	}
+}
+
+// classic: Rückfall auf Windows-Standardfenster, falls die eigenen Fenster nicht gehen.
+func (f *installFlow) classic() {
 	if !isAdmin() {
-		if !relaunchElevated(exe, args) {
+		if !relaunchElevated(f.exe, f.relaunch()) {
 			msgBox("Für die Installation sind Administratorrechte nötig.", mbIconWarning)
 		}
 		return
 	}
-	if interactive {
-		q := "Nicolaj Fernwartung installieren?\n\n" +
-			"Damit kann Nicolaj Webdesign diesen PC aus der Ferne betreuen: Programme installieren und aktualisieren, " +
-			"Benutzerkonten verwalten und bei Bedarf den Bildschirm sehen und steuern. " +
-			"Während einer Bildschirm-Verbindung zeigt eine rote Leiste oben am Bildschirm, dass jemand verbunden ist.\n\n" +
-			"Server: " + server + "\n\n" +
-			"Du kannst das jederzeit unter Einstellungen › Apps › „Nicolaj Fernwartung“ wieder entfernen."
-		if msgBox(q, mbYesNo|mbIconQuestion) != idYes {
-			return
-		}
-	}
-	name, err := install(exe, base, server, code, fp)
+	name, pcID, err := installWith(f.exe, f.base, f.reg, nil)
 	if err != nil {
 		msgBox("Die Installation hat nicht geklappt:\n\n"+err.Error(), mbIconError)
 		return
 	}
-	if interactive {
-		pc := ""
-		if cfg, err := loadConfig(screenConfigPath()); err == nil && cfg.PCID != "" {
-			pc = "\n\nDeine PC-ID: " + fmtPCID(cfg.PCID) + "\n(jederzeit im Startmenü unter „Nicolaj Fernwartung“)"
-		}
-		msgBox("Fertig! Dieser PC ist jetzt als „"+name+"“ mit Nicolaj Fernwartung verbunden."+pc, mbIconInfo)
-	}
+	msgBox("Fertig! Dieser PC ist jetzt als „"+name+"“ mit Nicolaj Fernwartung verbunden.\n\nDeine PC-ID: "+fmtPCID(pcID), mbIconInfo)
 }
 
-func install(exe string, base int64, server, code, fp string) (string, error) {
-	agentCfg, screenCfg, name, err := enroll(server, code, fp)
-	if err != nil {
-		return "", fmt.Errorf("Anmeldung am Server fehlgeschlagen: %w", err)
+func codeInstallUI(exe string, base int64, server, code, fp string, startNow bool, relaunch []string) {
+	f := &installFlow{exe: exe, base: base, server: server,
+		welcome:  func(problem string) *uiDialog { return dlgInstallWelcome(server, problem) },
+		reg:      func() (Config, Config, string, error) { return enroll(server, code, fp) },
+		done:     dlgInstallDone,
+		relaunch: func() []string { return relaunch },
 	}
+	f.run(startNow)
+}
+
+func requestInstallUI(exe string, base int64, server, fp, person string, startNow bool) {
+	var mu sync.Mutex
+	current := strings.TrimSpace(person)
+	name := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.TrimSpace(current)
+	}
+	f := &installFlow{exe: exe, base: base, server: server,
+		welcome:  func(problem string) *uiDialog { return dlgRequestWelcome(server, name(), problem) },
+		reg:      func() (Config, Config, string, error) { return requestAccess(server, fp, name()) },
+		done:     func(_, pcID string) *uiDialog { return dlgRequestDone(pcID) },
+		relaunch: func() []string { return []string{"--go", "--name", name()} },
+		ready:    func() bool { return name() != "" },
+		onInput: func(ctl *uiCtl) { // Namen merken und den Knopf freischalten
+			ctl.Update(func(d *uiDialog) {
+				if d.Input == nil {
+					return
+				}
+				mu.Lock()
+				current = d.Input.Value
+				mu.Unlock()
+				if b := d.button("request"); b != nil {
+					b.Disabled = strings.TrimSpace(d.Input.Value) == ""
+				}
+			})
+		},
+	}
+	f.run(startNow && current != "")
+}
+
+// installWith meldet den PC an (Code oder Anfrage) und richtet alles ein.
+// progress (optional) bekommt die Schritte 1–4 aus installSteps.
+func installWith(exe string, base int64, reg func() (Config, Config, string, error), progress func(int)) (string, string, error) {
+	step := func(i int) {
+		if progress != nil {
+			progress(i)
+		}
+	}
+	step(1)
+	agentCfg, screenCfg, name, err := reg()
+	if err != nil {
+		return "", "", fmt.Errorf("Anmeldung am Server fehlgeschlagen: %w", err)
+	}
+	step(2)
 
 	// Alte Version anhalten
 	stopAll()
 
 	pd, dd := programDir(), dataDir()
 	if err := os.MkdirAll(pd, 0o755); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := os.MkdirAll(filepath.Join(dd, "logs"), 0o755); err != nil {
-		return "", err
+		return "", "", err
 	}
 	target := filepath.Join(pd, "nicolaj-agent.exe")
 	if !strings.EqualFold(filepath.Clean(exe), filepath.Clean(target)) {
@@ -111,53 +237,69 @@ func install(exe string, base int64, server, code, fp string) (string, error) {
 			time.Sleep(time.Second)
 		}
 		if lastErr != nil {
-			return "", fmt.Errorf("Programm konnte nicht kopiert werden: %w", lastErr)
+			return "", "", fmt.Errorf("Programm konnte nicht kopiert werden: %w", lastErr)
 		}
 	}
 
 	// Datenordner: nur SYSTEM und Administratoren dürfen schreiben, Benutzer nur lesen.
 	icacls(dd, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-32-545:(OI)(CI)RX")
 	if err := saveConfig(agentConfigPath(), agentCfg); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := saveConfig(screenConfigPath(), screenCfg); err != nil {
-		return "", err
+		return "", "", err
 	}
 	// Den Schlüssel des Verwaltungsdienstes darf kein normaler Benutzer lesen.
 	icacls(agentConfigPath(), "/inheritance:r", "/grant:r", "*S-1-5-18:F", "*S-1-5-32-544:F")
 
+	step(3)
 	if err := createTask(taskAgent, agentTaskXML(target)); err != nil {
-		return "", fmt.Errorf("Dienst konnte nicht eingerichtet werden: %w", err)
+		return "", "", fmt.Errorf("Dienst konnte nicht eingerichtet werden: %w", err)
 	}
 	if err := createTask(taskScreen, screenTaskXML(target)); err != nil {
-		return "", fmt.Errorf("Bildschirm-Helfer konnte nicht eingerichtet werden: %w", err)
+		return "", "", fmt.Errorf("Bildschirm-Helfer konnte nicht eingerichtet werden: %w", err)
 	}
 	registerUninstall(target)
 	createShortcut(target)
 
+	step(4)
 	quiet(sys32("schtasks.exe"), "/Run", "/TN", taskAgent)
 	// Bildschirm-Helfer gleich für die aktuelle Sitzung starten (sonst erst nach der nächsten Anmeldung).
 	c := exec.Command(target, "screen")
 	c.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000200}
 	c.Start()
-	return name, nil
+	return name, agentCfg.PCID, nil
 }
 
 func runUninstall(args []string) {
-	silent := false
+	silent, confirmed := false, false
 	for _, a := range args {
-		if a == "--quiet" || a == "/quiet" {
+		switch a {
+		case "--quiet", "/quiet":
 			silent = true
+		case "--confirmed":
+			confirmed = true
 		}
 	}
 	exe, _ := os.Executable()
-	if !isAdmin() {
-		if !relaunchElevated(exe, append([]string{"uninstall"}, args...)) && !silent {
-			msgBox("Zum Entfernen sind Administratorrechte nötig.", mbIconWarning)
+	if !silent && !confirmed { // erst fragen, dann nach Administratorrechten
+		res, err := runUI(dlgUninstallConfirm(), uiOpts{})
+		if err != nil {
+			if msgBox("Nicolaj Fernwartung von diesem PC entfernen?\n\nDanach ist keine Fernwartung mehr möglich.", mbYesNo|mbIconQuestion) != idYes {
+				return
+			}
+		} else if res != "remove" {
+			return
 		}
-		return
 	}
-	if !silent && msgBox("Nicolaj Fernwartung von diesem PC entfernen?\n\nDanach ist keine Fernwartung mehr möglich.", mbYesNo|mbIconQuestion) != idYes {
+	if !isAdmin() {
+		a := []string{"uninstall", "--confirmed"}
+		if silent {
+			a = append(a, "--quiet")
+		}
+		if !relaunchElevated(exe, a) && !silent {
+			uiNotice("Nicht entfernt", "Zum Entfernen braucht Windows deine Bestätigung als Administrator.", "warn")
+		}
 		return
 	}
 	if cfg, err := loadConfig(agentConfigPath()); err == nil {
@@ -182,13 +324,34 @@ func runUninstall(args []string) {
 	}
 	cmd.Start()
 	if !silent {
-		msgBox("Nicolaj Fernwartung wurde entfernt.", mbIconInfo)
+		if _, err := runUI(dlgUninstallDone(), uiOpts{}); err != nil {
+			msgBox("Nicolaj Fernwartung wurde entfernt.", mbIconInfo)
+		}
 	}
 }
 
-// runInfo zeigt PC-Name und PC-ID – für Anrufe wie „Oma, was steht da?“.
+// runInfo zeigt PC-ID, PC-Name und Verbindung – für Anrufe wie „Oma, was steht da?“.
 func runInfo() {
-	msgBox(infoText(), mbIconInfo)
+	cfg, err := loadConfig(screenConfigPath())
+	if err != nil {
+		cfg, err = loadConfig(agentConfigPath())
+	}
+	host, _ := os.Hostname()
+	info := pcInfo{Installed: err == nil, PCID: cfg.PCID, Host: host, Name: cfg.Name, Checking: true}
+	opts := uiOpts{}
+	if err == nil {
+		opts.Ready = func(ctl *uiCtl) {
+			ok := serverReachable(cfg)
+			ctl.Update(func(d *uiDialog) {
+				i := info
+				i.Checking, i.Online = false, ok
+				*d = *dlgInfo(i)
+			})
+		}
+	}
+	if _, uerr := runUI(dlgInfo(info), opts); uerr != nil {
+		msgBox(infoText(), mbIconInfo)
+	}
 }
 
 func shortcutPath() string {

@@ -37,6 +37,9 @@ type Device struct {
 	ConsentRequired bool                    `json:"consentRequired"`
 	SecurityEnabled bool                    `json:"securityEnabled"`
 	UpdateTester    bool                    `json:"updateTester"`
+	Group           string                  `json:"group,omitempty"`   // z. B. „Familie“, „Kunden“
+	Pending         bool                    `json:"pending,omitempty"` // Zugangsanfrage: wartet auf Freigabe
+	RequestedAt     *time.Time              `json:"requestedAt,omitempty"`
 	AgentTokenHash  string                  `json:"agentTokenHash"`
 	ScreenTokenHash string                  `json:"screenTokenHash"`
 	AgentVersion    string                  `json:"agentVersion"`
@@ -101,13 +104,23 @@ type SessionRec struct {
 }
 
 type DBData struct {
-	Admins      []*Admin           `json:"admins"`
-	Devices     map[string]*Device `json:"devices"`
-	EnrollCodes []*EnrollCode      `json:"enrollCodes"`
-	Commands    []*Command         `json:"commands"`
-	Audit       []*AuditEntry      `json:"audit"`
-	Sessions    []*SessionRec      `json:"sessions"`
-	Settings    *Settings          `json:"settings"`
+	Admins      []*Admin             `json:"admins"`
+	Devices     map[string]*Device   `json:"devices"`
+	EnrollCodes []*EnrollCode        `json:"enrollCodes"`
+	Commands    []*Command           `json:"commands"`
+	Audit       []*AuditEntry        `json:"audit"`
+	Sessions    []*SessionRec        `json:"sessions"`
+	Settings    *Settings            `json:"settings"`
+	Rejected    map[string]time.Time `json:"rejected,omitempty"` // abgelehnte Anfragen: Agent entfernt sich beim nächsten Kontakt
+	Scripts     []*Script            `json:"scripts,omitempty"`  // gespeicherte PowerShell-Skripte
+}
+
+type Script struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Body      string    `json:"script"`
+	CreatedBy string    `json:"createdBy"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 const (
