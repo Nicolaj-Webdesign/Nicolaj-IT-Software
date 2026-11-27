@@ -5,6 +5,7 @@ package main
 // (Text über GDI), in den Tests entstehen daraus Vorschaubilder.
 
 import (
+	"image"
 	"math"
 	"strings"
 	"unicode/utf8"
@@ -92,6 +93,9 @@ const (
 	gChat    = ''
 	gShield  = ''
 	gEye     = ''
+	gAttach  = '\ue723' // Büroklammer
+	gPicture = '\ue8b9' // Bild
+	gDown    = '\ue74b' // Pfeil nach unten
 )
 
 // ---------- Szene ----------
@@ -123,7 +127,11 @@ const (
 	opGlow
 	opLogo
 	opText
+	opImage
+	opLayer // alles danach liegt über dem Text davor (z. B. schwebender Knopf)
 )
+
+type uiRect struct{ X, Y, W, H float64 }
 
 type uiOp struct {
 	Kind       int
@@ -133,7 +141,30 @@ type uiOp struct {
 	Col        rgba
 	Text       string
 	Font       uiFont
-	Align      int // 0 links, 1 Mitte, 2 rechts
+	Align      int      // 0 links, 1 Mitte, 2 rechts
+	Clip       *uiRect  // nur innerhalb dieses Rechtecks zeichnen (Scrollbereich)
+	Img        *uiImage // bei opImage
+}
+
+// uiImage: Bild im Fenster (BGRA, vormultipliert). Die auf Bildschirmgröße skalierte
+// Fassung wird zwischengespeichert, weil das Fenster oft neu gezeichnet wird.
+type uiImage struct {
+	ID     string
+	W, H   int
+	Pix    []byte
+	cw, ch int
+	cache  []byte
+}
+
+func (im *uiImage) scaled(w, h int) []byte {
+	if w == im.W && h == im.H {
+		return im.Pix
+	}
+	if im.cache == nil || im.cw != w || im.ch != h {
+		src := &image.RGBA{Pix: im.Pix, Stride: im.W * 4, Rect: image.Rect(0, 0, im.W, im.H)}
+		im.cache, im.cw, im.ch = scaleImage(src, w, h).Pix, w, h // Kanalreihenfolge bleibt erhalten
+	}
+	return im.cache
 }
 
 type uiHit struct {
@@ -145,7 +176,13 @@ type uiScene struct {
 	W, H, R float64
 	Ops     []uiOp
 	Hits    []uiHit
-	Default string // Enter
+	Default string   // Enter
+	Links   []string // Ziele der Links ("link:N")
+
+	// Scrollbereich des Chats
+	ScrollMax, ScrollY float64
+	ScrollRatio        float64 // Scroll-Pixel pro Pixel Bewegung der Scrollleiste
+	ViewTop, ViewH     float64
 }
 
 func (s *uiScene) hitAt(x, y float64) string {
@@ -236,6 +273,18 @@ type uiChatMsg struct {
 	Mine bool // von der Person am PC
 	Text string
 	Meta string // Uhrzeit, „gelesen“
+
+	HasImg     bool
+	Img        *uiImage // Vorschau (nil, solange sie lädt)
+	ImgW, ImgH int      // Originalgröße (für den Platzhalter)
+	ImgNote    string   // z. B. „Bild wird geladen …“
+}
+
+// uiAttach: Bild, das mit der nächsten Nachricht gesendet wird.
+type uiAttach struct {
+	Img   *uiImage
+	Label string
+	Busy  bool // wird noch vorbereitet
 }
 
 type uiRow struct{ Label, Value, Tone string }
@@ -246,25 +295,27 @@ type uiBullet struct {
 }
 
 type uiDialog struct {
-	Width    float64
-	Badge    rune   // Symbol im Kreis; 'L' = Logo; 0 = keins
-	Tone     string // accent | ok | danger | warn
-	Title    string
-	Body     string
-	From     string // Chat-Stil: Absender
-	Message  string // Chat-Stil: Nachricht
-	BigLabel string
-	Big      string
-	BigCopy  bool
-	Rows     []uiRow
-	Bullets  []uiBullet
-	Input    *uiInput
-	Chat     []uiChatMsg // nicht nil: Gesprächsansicht
-	ChatHint string      // Text, solange noch nichts geschrieben wurde
-	Progress float64     // < 0: keiner; 0..1
-	Note     string
-	Buttons  []uiBtn
-	Closable bool
+	Width     float64
+	Badge     rune   // Symbol im Kreis; 'L' = Logo; 0 = keins
+	Tone      string // accent | ok | danger | warn
+	Title     string
+	Body      string
+	From      string // Chat-Stil: Absender
+	Message   string // Chat-Stil: Nachricht
+	BigLabel  string
+	Big       string
+	BigCopy   bool
+	Rows      []uiRow
+	Bullets   []uiBullet
+	Input     *uiInput
+	Chat      []uiChatMsg // nicht nil: Gesprächsansicht
+	ChatHint  string      // Text, solange noch nichts geschrieben wurde
+	Attach    *uiAttach   // angehängtes Bild
+	CanAttach bool        // Büroklammer im Eingabefeld
+	Progress  float64     // < 0: keiner; 0..1
+	Note      string
+	Buttons   []uiBtn
+	Closable  bool
 }
 
 func (d *uiDialog) button(id string) *uiBtn {
@@ -282,15 +333,43 @@ type uiState struct {
 	Phase        float64 // Animation 0..1 (Fortschritt)
 	Focus        string  // "input", wenn das Eingabefeld aktiv ist
 	CaretOn      bool
+
+	Scroll   float64 // Chat: Abstand vom Anfang
+	Unstuck  bool    // Chat: nicht am Ende (sonst folgt die Ansicht neuen Nachrichten)
+	NewBelow bool    // Chat: neue Nachricht unterhalb der Ansicht
+	SelAll   bool    // Eingabefeld: alles markiert (Strg+A)
 }
 
 type builder struct {
-	s  *uiScene
-	m  measurer
-	st uiState
+	s    *uiScene
+	m    measurer
+	st   uiState
+	clip *uiRect // gesetzt: alles Folgende wird darauf beschnitten
 }
 
-func (b *builder) add(o uiOp) { b.s.Ops = append(b.s.Ops, o) }
+func (b *builder) add(o uiOp) {
+	if o.Clip == nil {
+		o.Clip = b.clip
+	}
+	if c := o.Clip; c != nil && o.Kind != opGlow && o.Kind != opLayer &&
+		(o.Y+o.H < c.Y || o.Y > c.Y+c.H || o.X+o.W < c.X || o.X > c.X+c.W) {
+		return // ganz außerhalb des Scrollbereichs
+	}
+	b.s.Ops = append(b.s.Ops, o)
+}
+
+// hit: Klickfläche (bei aktivem Beschnitt nur der sichtbare Teil).
+func (b *builder) hit(id string, x, y, w, h float64) {
+	if c := b.clip; c != nil {
+		x0, y0 := math.Max(x, c.X), math.Max(y, c.Y)
+		x1, y1 := math.Min(x+w, c.X+c.W), math.Min(y+h, c.Y+c.H)
+		if x1 <= x0 || y1 <= y0 {
+			return
+		}
+		x, y, w, h = x0, y0, x1-x0, y1-y0
+	}
+	b.s.Hits = append(b.s.Hits, uiHit{id, x, y, w, h})
+}
 
 func (b *builder) fill(x, y, w, h, r float64, c rgba) {
 	b.add(uiOp{Kind: opFill, X: x, Y: y, W: w, H: h, R: r, Col: c})
@@ -487,7 +566,10 @@ func layoutDialog(d *uiDialog, st uiState, m measurer) *uiScene {
 
 	if in := d.Input; in != nil && in.Multiline {
 		y += 14
-		y = b.multiInput(in, pad, y, inner)
+		if d.Attach != nil {
+			y = b.attachChip(d.Attach, pad, y, inner) + 8
+		}
+		y = b.multiInput(d, pad, y, inner)
 	} else if in != nil {
 		y += 18
 		b.text(pad, y, inner, fLabel, pal.muted, 0, in.Label)
@@ -578,7 +660,165 @@ func layoutDialog(d *uiDialog, st uiState, m measurer) *uiScene {
 	return s
 }
 
-// chat: Titel und Gesprächsverlauf (die neuesten Nachrichten, so viele wie hineinpassen).
+// ---------- Gesprächsansicht ----------
+
+const chatViewH = 340.0 // Höhe des Scrollbereichs
+
+// uiRun: Stück einer Textzeile; Link >= 0 verweist auf Scene.Links.
+type uiRun struct {
+	Text string
+	Link int
+}
+
+// splitLink zerlegt ein Wort in Satzzeichen davor, Link und Satzzeichen danach.
+func splitLink(word string) (pre, link, post string) {
+	core := strings.TrimLeft(word, "(<[„\"'")
+	pre = word[:len(word)-len(core)]
+	lc := strings.ToLower(core)
+	if !strings.HasPrefix(lc, "https://") && !strings.HasPrefix(lc, "http://") && !strings.HasPrefix(lc, "www.") {
+		return word, "", ""
+	}
+	end := strings.TrimRight(core, ".,;:!?)]>“\"'»…")
+	if strings.Count(end, "(") > strings.Count(end, ")") && len(end) < len(core) && core[len(end)] == ')' { // Wikipedia-Links mit Klammern
+		end = core[:len(end)+1]
+	}
+	if len(end) <= len("www.") || strings.HasSuffix(strings.ToLower(end), "://") {
+		return word, "", ""
+	}
+	return pre, end, core[len(end):]
+}
+
+// linkURL macht aus dem erkannten Text eine Adresse zum Öffnen.
+func linkURL(s string) string {
+	if strings.HasPrefix(strings.ToLower(s), "www.") {
+		return "https://" + s
+	}
+	return s
+}
+
+type wordPiece struct {
+	r    rune
+	link int
+}
+
+func piecesText(ps []wordPiece) string {
+	var sb strings.Builder
+	for _, p := range ps {
+		sb.WriteRune(p.r)
+	}
+	return sb.String()
+}
+
+func piecesRuns(ps []wordPiece) []uiRun {
+	var out []uiRun
+	for _, p := range ps {
+		if n := len(out); n > 0 && out[n-1].Link == p.link {
+			out[n-1].Text += string(p.r)
+		} else {
+			out = append(out, uiRun{string(p.r), p.link})
+		}
+	}
+	return out
+}
+
+// msgLines bricht eine Nachricht um und erkennt dabei Links (auch über Zeilen hinweg).
+func (b *builder) msgLines(text string, f uiFont, maxW float64) (lines [][]uiRun, widest float64) {
+	m := b.m
+	for _, para := range strings.Split(strings.ReplaceAll(text, "\r", ""), "\n") {
+		words := strings.Fields(para)
+		if len(words) == 0 {
+			lines = append(lines, nil)
+			continue
+		}
+		var cur []wordPiece
+		flush := func() {
+			lines = append(lines, piecesRuns(cur))
+			widest = math.Max(widest, m.textW(f, piecesText(cur)))
+			cur = nil
+		}
+		for _, w := range words {
+			var ps []wordPiece
+			pre, link, post := splitLink(w)
+			li := -1
+			if link != "" {
+				li = len(b.s.Links)
+				b.s.Links = append(b.s.Links, linkURL(link))
+			}
+			for _, r := range pre {
+				ps = append(ps, wordPiece{r, -1})
+			}
+			for _, r := range link {
+				ps = append(ps, wordPiece{r, li})
+			}
+			for _, r := range post {
+				ps = append(ps, wordPiece{r, -1})
+			}
+			if len(cur) > 0 {
+				try := append(append(append([]wordPiece{}, cur...), wordPiece{' ', -1}), ps...)
+				if m.textW(f, piecesText(try)) <= maxW {
+					cur = try
+					continue
+				}
+				flush()
+			}
+			for len(ps) > 1 && m.textW(f, piecesText(ps)) > maxW { // überlang (z. B. Link): hart trennen
+				lo, hi := 1, len(ps)-1
+				for lo < hi { // längster Anfang, der passt
+					mid := (lo + hi + 1) / 2
+					if m.textW(f, piecesText(ps[:mid])) <= maxW {
+						lo = mid
+					} else {
+						hi = mid - 1
+					}
+				}
+				cur = ps[:lo]
+				flush()
+				ps = ps[lo:]
+			}
+			cur = ps
+		}
+		flush()
+	}
+	return lines, widest
+}
+
+// runLines zeichnet umgebrochene Zeilen mit Links (unterstrichen, anklickbar).
+func (b *builder) runLines(x, y float64, f uiFont, col, linkCol rgba, lines [][]uiRun) {
+	lh := lineH(f)
+	for _, ln := range lines {
+		cx := x
+		for _, r := range ln {
+			tw := b.m.textW(f, r.Text)
+			c := col
+			if r.Link >= 0 {
+				id := "link:" + itoa(r.Link)
+				c = linkCol
+				if b.st.Hover == id {
+					c = blendOver(linkCol.alpha(0.75), pal.logoInk)
+				}
+				b.fill(cx, y+lh-4, tw, 1, 0, c)
+				b.hit(id, cx, y, tw, lh)
+			}
+			b.text(cx, y, tw+1, f, c, 0, r.Text)
+			cx += tw
+		}
+		y += lh
+	}
+}
+
+func itoa(n int) string {
+	if n <= 0 {
+		return "0"
+	}
+	var d []byte
+	for n > 0 {
+		d = append([]byte{byte('0' + n%10)}, d...)
+		n /= 10
+	}
+	return string(d)
+}
+
+// chat: Titel und Gesprächsverlauf in einem Scrollbereich.
 func (b *builder) chat(d *uiDialog, w, y float64) float64 {
 	const pad = 24.0
 	inner := w - 2*pad
@@ -592,7 +832,6 @@ func (b *builder) chat(d *uiDialog, w, y float64) float64 {
 		y += lineH(fSmall)
 	}
 	y += 14
-	const area = 330.0
 	if len(d.Chat) == 0 {
 		h := 132.0
 		b.fill(pad, y, inner, h, 14, pal.surface)
@@ -602,55 +841,190 @@ func (b *builder) chat(d *uiDialog, w, y float64) float64 {
 		b.lines(pad+24, y+74, inner-48, fBody, pal.muted, 1, ls)
 		return y + h
 	}
-	type block struct {
-		msg   uiChatMsg
-		lines []string
-		h     float64
+
+	top, viewH := y, chatViewH
+	type item struct {
+		msg    uiChatMsg
+		lines  [][]uiRun
+		bw, bh float64 // Textblase
+		iw, ih float64 // Bild
+		h      float64
 	}
-	maxW := inner*0.8 - 28
-	var blocks []block
-	total := 0.0
-	for i := len(d.Chat) - 1; i >= 0; i-- {
-		cm := d.Chat[i]
-		ls := wrapText(m, fMsg, cm.Text, maxW, 12)
-		h := float64(len(ls))*lineH(fMsg) + 20 + lineH(fSmall) + 10
-		if total+h > area && len(blocks) > 0 {
-			break
+	maxBW := inner * 0.8
+	items := make([]item, len(d.Chat))
+	content := 14.0
+	for i, cm := range d.Chat {
+		it := item{msg: cm}
+		avail := maxBW
+		if !cm.Mine {
+			avail = math.Min(maxBW, inner-34)
 		}
-		blocks = append([]block{{cm, ls, h}}, blocks...)
-		total += h
+		if cm.HasImg {
+			nw, nh := float64(cm.ImgW), float64(cm.ImgH)
+			if cm.Img != nil && (nw <= 0 || nh <= 0) {
+				nw, nh = float64(cm.Img.W), float64(cm.Img.H)
+			}
+			if nw <= 0 || nh <= 0 {
+				nw, nh = 4, 3
+			}
+			k := math.Min(1, math.Min(math.Min(avail, 300)/nw, 240/nh))
+			it.iw, it.ih = math.Max(64, math.Round(nw*k)), math.Max(48, math.Round(nh*k))
+			it.h += it.ih
+		}
+		if strings.TrimSpace(cm.Text) != "" {
+			ls, tw := b.msgLines(cm.Text, fMsg, avail-28)
+			it.lines = ls
+			it.bw = math.Min(avail, tw+28)
+			it.bh = float64(len(ls))*lineH(fMsg) + 20
+			if cm.HasImg {
+				it.h += 6
+			}
+			it.h += it.bh
+		}
+		it.h += 3 + lineH(fSmall) + 10
+		items[i] = it
+		content += it.h
 	}
-	for _, bl := range blocks {
-		tw := 0.0
-		for _, l := range bl.lines {
-			tw = math.Max(tw, m.textW(fMsg, l))
+	content += 2
+	maxScroll := math.Max(0, content-viewH)
+	sc := b.st.Scroll
+	if !b.st.Unstuck || sc > maxScroll {
+		sc = maxScroll
+	}
+	sc = math.Max(0, sc)
+	b.s.ScrollMax, b.s.ScrollY, b.s.ViewTop, b.s.ViewH = maxScroll, sc, top, viewH
+
+	b.fill(0, top, w, 1, 0, pal.surfaceBorder)
+	b.fill(0, top+viewH-1, w, 1, 0, pal.surfaceBorder)
+	b.clip = &uiRect{1, top + 1, w - 2, viewH - 2}
+	cy := top + 14 - sc
+	for i, it := range items {
+		if cy+it.h < top || cy > top+viewH {
+			cy += it.h
+			continue
 		}
-		bw := math.Min(inner*0.8, tw+28)
-		bh := float64(len(bl.lines))*lineH(fMsg) + 20
-		if bl.msg.Mine {
-			x := pad + inner - bw
-			b.fill(x, y, bw, bh, 14, pal.accent)
-			b.lines(x+14, y+10, bw-28, fMsg, pal.logoInk, 0, bl.lines)
-			b.text(pad, y+bh+3, inner, fSmall, pal.faint, 2, bl.msg.Meta)
+		cm := it.msg
+		blockW := math.Max(it.iw, it.bw)
+		x := pad + 34
+		if cm.Mine {
+			x = pad + inner - blockW
+		}
+		id := itoa(i)
+		b.hit("msg:"+id, x, cy, blockW, it.h-13-lineH(fSmall))
+		yy := cy
+		if cm.HasImg {
+			ix := x
+			if cm.Mine {
+				ix = pad + inner - it.iw
+			}
+			if cm.Img != nil {
+				b.add(uiOp{Kind: opImage, X: ix, Y: yy, W: it.iw, H: it.ih, R: 12, Img: cm.Img})
+				b.stroke(ix, yy, it.iw, it.ih, 12, 1, hexc("#ffffff1a"))
+				if b.st.Hover == "img:"+id {
+					b.fill(ix, yy, it.iw, it.ih, 12, hexc("#ffffff14"))
+				}
+				b.hit("img:"+id, ix, yy, it.iw, it.ih)
+			} else {
+				b.fill(ix, yy, it.iw, it.ih, 12, pal.surface)
+				b.stroke(ix, yy, it.iw, it.ih, 12, 1, pal.surfaceBorder)
+				gy := yy + it.ih/2 - 12
+				if cm.ImgNote != "" && it.iw > 100 && it.ih > 70 {
+					gy = yy + it.ih/2 - 22
+					b.text(ix+8, gy+28, it.iw-16, fSmall, pal.faint, 1, cm.ImgNote)
+				}
+				b.glyph(ix, gy, it.iw, 24, gPicture, 18, pal.faint)
+			}
+			yy += it.ih
+			if it.lines != nil {
+				yy += 6
+			}
+		}
+		if it.lines != nil {
+			if cm.Mine {
+				bx := pad + inner - it.bw
+				b.fill(bx, yy, it.bw, it.bh, 14, pal.accent)
+				b.runLines(bx+14, yy+10, fMsg, pal.logoInk, pal.logoInk, it.lines)
+			} else {
+				b.fill(x, yy, it.bw, it.bh, 14, pal.surface)
+				b.stroke(x, yy, it.bw, it.bh, 14, 1, pal.surfaceBorder)
+				b.runLines(x+14, yy+10, fMsg, pal.text, hexc("#a8b2ff"), it.lines)
+			}
+			yy += it.bh
+		}
+		if cm.Mine {
+			b.text(pad, yy+3, inner, fSmall, pal.faint, 2, cm.Meta)
 		} else {
-			b.logo(pad, y+bh-26, 26)
-			x := pad + 34
-			bw = math.Min(bw, inner-34)
-			b.fill(x, y, bw, bh, 14, pal.surface)
-			b.stroke(x, y, bw, bh, 14, 1, pal.surfaceBorder)
-			b.lines(x+14, y+10, bw-28, fMsg, pal.text, 0, bl.lines)
-			b.text(x, y+bh+3, inner, fSmall, pal.faint, 0, "Nicolaj · "+bl.msg.Meta)
+			b.logo(pad, yy-26, 26)
+			b.text(x, yy+3, inner-34, fSmall, pal.faint, 0, "Nicolaj · "+cm.Meta)
 		}
-		y += bl.h
+		cy += it.h
 	}
-	return y - 10
+	b.clip = nil
+
+	if maxScroll > 0 { // Scrollleiste
+		trackT, trackH := top+6, viewH-12
+		th := math.Max(30, trackH*viewH/content)
+		ty := trackT + (trackH-th)*sc/maxScroll
+		b.s.ScrollRatio = maxScroll / math.Max(1, trackH-th)
+		bw, col := 4.0, pal.faint.alpha(0.45)
+		if b.st.Hover == "scroll" || b.st.Press == "scroll" {
+			bw, col = 6, pal.muted.alpha(0.75)
+		}
+		b.fill(w-7-bw, ty, bw, th, bw/2, col)
+		b.hit("scroll", w-19, ty, 16, th)
+	}
+	if b.st.NewBelow && sc < maxScroll-1 { // Hinweis auf neue Nachricht (über dem Text)
+		b.add(uiOp{Kind: opLayer})
+		label := "Neue Nachricht"
+		pw := m.textW(fBarText, label) + 46
+		px, py := (w-pw)/2, top+viewH-14-32
+		bg := pal.accent
+		if b.st.Hover == "newbelow" {
+			bg = pal.accentHover
+		}
+		b.fill(px, py, pw, 32, 16, bg)
+		b.glyph(px+12, py, 14, 32, gDown, 10, pal.logoInk)
+		b.text(px+32, py+(32-lineH(fBarText))/2, pw-40, fBarText, pal.logoInk, 0, label)
+		b.hit("newbelow", px, py, pw, 32)
+	}
+	return top + viewH
+}
+
+// attachChip: angehängtes Bild über dem Eingabefeld.
+func (b *builder) attachChip(at *uiAttach, x, y, w float64) float64 {
+	h := 60.0
+	b.fill(x, y, w, h, 12, pal.surface)
+	b.stroke(x, y, w, h, 12, 1, pal.surfaceBorder)
+	ts := 44.0
+	if at.Img != nil && !at.Busy {
+		k := math.Min(ts/float64(at.Img.W), ts/float64(at.Img.H))
+		iw, ih := math.Max(8, float64(at.Img.W)*k), math.Max(8, float64(at.Img.H)*k)
+		b.add(uiOp{Kind: opImage, X: x + 8 + (ts-iw)/2, Y: y + 8 + (ts-ih)/2, W: iw, H: ih, R: 6, Img: at.Img})
+	} else {
+		b.fill(x+8, y+8, ts, ts, 8, pal.second)
+		b.glyph(x+8, y+8, ts, ts, gPicture, 16, pal.faint)
+	}
+	label := at.Label
+	if at.Busy {
+		label = "wird vorbereitet …"
+	}
+	tx := x + 8 + ts + 12
+	tw := w - (tx - x) - 46
+	b.text(tx, y+10, tw, fBodyBold, pal.text, 0, "Bild angehängt")
+	b.text(tx, y+10+lineH(fBodyBold), tw, fSmall, pal.faint, 0, label)
+	b.ghost("unattach", x+w-40, y+(h-30)/2, 30, 30, gClose, 10, pal.faint, pal.text)
+	return y + h
 }
 
 // multiInput: mehrzeiliges Eingabefeld (wächst bis 5 Zeilen, zeigt das Ende).
-func (b *builder) multiInput(in *uiInput, x, y, w float64) float64 {
+func (b *builder) multiInput(d *uiDialog, x, y, w float64) float64 {
+	in := d.Input
 	m, st := b.m, b.st
 	focused := st.Focus == "input"
 	tw := w - 28
+	if d.CanAttach {
+		tw -= 34
+	}
 	var ls []string
 	if in.Value != "" {
 		ls = wrapText(m, fMsg, in.Value, tw-4, 0)
@@ -681,14 +1055,24 @@ func (b *builder) multiInput(in *uiInput, x, y, w float64) float64 {
 			b.fill(x+14, y+14, 1.5, lineH(fMsg)-6, 0.5, pal.text)
 		}
 	} else {
+		if st.SelAll { // alles markiert (Strg+A)
+			for i, l := range ls {
+				if lw := m.textW(fMsg, l); lw > 0 {
+					b.fill(x+13, y+11+float64(i)*lineH(fMsg)+2, lw+3, lineH(fMsg)-3, 3, pal.accent.alpha(0.45))
+				}
+			}
+		}
 		b.lines(x+14, y+11, tw, fMsg, pal.text, 0, ls)
-		if focused && st.CaretOn {
+		if focused && st.CaretOn && !st.SelAll {
 			last := ls[len(ls)-1]
 			cy := y + 11 + float64(len(ls)-1)*lineH(fMsg)
 			b.fill(x+14+m.textW(fMsg, last)+1, cy+3, 1.5, lineH(fMsg)-6, 0.5, pal.text)
 		}
 	}
 	b.s.Hits = append(b.s.Hits, uiHit{"input", x, y, w, fh})
+	if d.CanAttach {
+		b.ghost("attach", x+w-40, y+fh-38, 32, 32, gAttach, 15, pal.faint, pal.text)
+	}
 	return y + fh
 }
 
@@ -727,6 +1111,7 @@ type canvas struct {
 	S      float64   // Skalierung (DPI)
 	OX, OY float64   // Versatz in Geräte-Pixeln
 	clip   []float64 // optional: abgerundetes Rechteck (cx, cy, hw, hh, r), außerhalb wird nicht gezeichnet
+	rect   []int     // optional: Rechteck (x0, y0, x1, y1) in Geräte-Pixeln, z. B. Scrollbereich
 }
 
 func newCanvas(w, h int, scale float64) *canvas {
@@ -782,7 +1167,54 @@ func (c *canvas) box(x, y, w, h, grow float64) (int, int, int, int) {
 	if y1 > c.H {
 		y1 = c.H
 	}
+	if r := c.rect; r != nil {
+		x0, y0, x1, y1 = max(x0, r[0]), max(y0, r[1]), min(x1, r[2]), min(y1, r[3])
+	}
 	return x0, y0, x1, y1
+}
+
+// image zeichnet ein Bild mit abgerundeten Ecken.
+func (c *canvas) image(o uiOp) {
+	if o.Img == nil || o.Img.W < 1 || o.Img.H < 1 {
+		return
+	}
+	dx, dy := math.Round(o.X*c.S+c.OX), math.Round(o.Y*c.S+c.OY)
+	dw, dh := int(math.Round(o.W*c.S)), int(math.Round(o.H*c.S))
+	if dw < 1 || dh < 1 || dw > 8000 || dh > 8000 {
+		return
+	}
+	pix := o.Img.scaled(dw, dh)
+	cx, cy := dx+float64(dw)/2, dy+float64(dh)/2
+	hw, hh, rr := float64(dw)/2, float64(dh)/2, o.R*c.S
+	x0, y0, x1, y1 := c.box(o.X, o.Y, o.W, o.H, 1)
+	for py := y0; py < y1; py++ {
+		sy := py - int(dy)
+		if sy < 0 || sy >= dh {
+			continue
+		}
+		for px := x0; px < x1; px++ {
+			sx := px - int(dx)
+			if sx < 0 || sx >= dw {
+				continue
+			}
+			fx, fy := float64(px)+0.5, float64(py)+0.5
+			cov := math.Max(0, math.Min(1, 0.5-sdRRect(fx, fy, cx, cy, hw, hh, rr)))
+			if c.clip != nil {
+				cov *= math.Max(0, math.Min(1, 0.5-sdRRect(fx, fy, c.clip[0], c.clip[1], c.clip[2], c.clip[3], c.clip[4])))
+			}
+			if cov <= 0 {
+				continue
+			}
+			s := pix[(sy*dw+sx)*4:]
+			a := float64(s[3]) / 255 * cov
+			inv := 1 - a
+			p := c.Pix[(py*c.W+px)*4 : (py*c.W+px)*4+4 : (py*c.W+px)*4+4]
+			p[0] = uint8(math.Min(255, float64(s[0])*cov+float64(p[0])*inv+0.5))
+			p[1] = uint8(math.Min(255, float64(s[1])*cov+float64(p[1])*inv+0.5))
+			p[2] = uint8(math.Min(255, float64(s[2])*cov+float64(p[2])*inv+0.5))
+			p[3] = uint8(math.Min(255, 255*a+float64(p[3])*inv+0.5))
+		}
+	}
 }
 
 func (c *canvas) rr(x, y, w, h, r, sw float64, col rgba, stroke bool) {
@@ -886,12 +1318,35 @@ func (c *canvas) logoMark(x, y, size float64) {
 	c.rr(x+42*k, y+16*k, 6*k, 34*k, 1.5*k, 0, pal.accent, false)
 }
 
+// layers teilt die Zeichenbefehle an opLayer auf (Text einer Ebene liegt unter der nächsten).
+func (s *uiScene) layers() [][]uiOp {
+	var out [][]uiOp
+	start := 0
+	for i, o := range s.Ops {
+		if o.Kind == opLayer {
+			out = append(out, s.Ops[start:i])
+			start = i + 1
+		}
+	}
+	return append(out, s.Ops[start:])
+}
+
 // paint zeichnet alle Formen einer Szene (Text übernimmt das jeweilige System).
-func (c *canvas) paint(s *uiScene) {
+func (c *canvas) paint(s *uiScene) { c.paintOps(s, s.Ops) }
+
+func (c *canvas) paintOps(s *uiScene, ops []uiOp) {
 	c.clip = []float64{s.W/2*c.S + c.OX, s.H/2*c.S + c.OY, s.W / 2 * c.S, s.H / 2 * c.S, s.R * c.S}
 	defer func() { c.clip = nil }()
-	for _, o := range s.Ops {
+	defer func() { c.rect = nil }()
+	for _, o := range ops {
+		c.rect = nil
+		if r := o.Clip; r != nil {
+			c.rect = []int{int(math.Floor(r.X*c.S + c.OX)), int(math.Floor(r.Y*c.S + c.OY)),
+				int(math.Ceil((r.X+r.W)*c.S + c.OX)), int(math.Ceil((r.Y+r.H)*c.S + c.OY))}
+		}
 		switch o.Kind {
+		case opImage:
+			c.image(o)
 		case opFill:
 			c.rr(o.X, o.Y, o.W, o.H, o.R, 0, o.Col, false)
 		case opStroke:
@@ -904,8 +1359,8 @@ func (c *canvas) paint(s *uiScene) {
 	}
 }
 
-// renderShapes: Szene mit Schattenrand auf eine neue Leinwand (Geräte-Pixel).
-func renderShapes(s *uiScene, scale, margin float64) *canvas {
+// sceneCanvas: leere Leinwand mit Schattenrand (Geräte-Pixel).
+func sceneCanvas(s *uiScene, scale, margin float64) *canvas {
 	w := int(math.Ceil((s.W + 2*margin) * scale))
 	h := int(math.Ceil((s.H + 2*margin) * scale))
 	c := newCanvas(w, h, scale)
@@ -913,6 +1368,12 @@ func renderShapes(s *uiScene, scale, margin float64) *canvas {
 	if margin > 0 {
 		c.shadow(0, 6, s.W, s.H, s.R, margin*0.9, hexc("#000000").alpha(0.55))
 	}
+	return c
+}
+
+// renderShapes: alle Formen einer Szene mit Schattenrand.
+func renderShapes(s *uiScene, scale, margin float64) *canvas {
+	c := sceneCanvas(s, scale, margin)
 	c.paint(s)
 	return c
 }

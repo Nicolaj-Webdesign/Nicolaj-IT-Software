@@ -580,3 +580,18 @@ tr.off td { opacity: .75; }
 .push-row > div { flex: 1; min-width: 0; }
 .push-row b { font-weight: 600; }
 .push-row .small { margin-top: 2px; }
+
+/* Bilder & Anhänge im Chat */
+.chat-img { display: block; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); background: var(--surface-2); line-height: 0; }
+.chat-img img { display: block; max-width: min(320px, 100%); height: auto; object-fit: cover; }
+.chat-img + .bubble { margin-top: 6px; }
+.chat-img.gone { display: flex; align-items: center; gap: 8px; padding: 14px 16px; color: var(--faint); line-height: 1.4; font-size: 13px; }
+.bubble a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.msg.theirs .bubble a { color: var(--accent-text, #a8b2ff); }
+.chat-attach { display: flex; align-items: center; gap: 12px; margin: 0 14px; padding: 8px 10px; border: 1px solid var(--border); border-bottom: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: var(--surface-2); }
+.chat-attach[hidden] { display: none; }
+.chat-attach .grow { display: flex; flex-direction: column; min-width: 0; }
+.chat-attach .grow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-thumb { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex: none; display: grid; place-items: center; background: var(--surface); color: var(--faint); }
+.chat-compose .icon-btn { flex: none; align-self: flex-end; margin-bottom: 4px; }
+.chat.drop { outline: 2px dashed var(--accent); outline-offset: -6px; }

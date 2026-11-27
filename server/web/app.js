@@ -27,6 +27,8 @@ const ICONS = {
   lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
   message: '<path d="M4 5h16v11H9l-5 4z"/>',
   send: '<path d="M4 12 20 4l-4 16-4-6.5z"/><path d="m12 13.5 8-9.5"/>',
+  attach: '<path d="m20 11.5-8.3 8.3a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="m21 16-5-5-9 9"/>',
   folder: '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>',
@@ -78,6 +80,63 @@ async function api(method, path, body) {
     throw e;
   }
   return j;
+}
+
+// Datei/Bild als Rohdaten senden (Bilder im Chat)
+async function apiRaw(path, blob) {
+  const r = await fetch(path, { method: 'POST', headers: { 'X-NRMM': '1', 'Content-Type': blob.type || 'application/octet-stream' }, credentials: 'same-origin', body: blob });
+  const t = await r.text();
+  let j = {};
+  try { j = t ? JSON.parse(t) : {}; } catch { j = { error: t }; }
+  if (!r.ok) {
+    if (r.status === 401 && S.me) { S.me = null; renderLogin(); }
+    throw new Error(j.error || `Fehler ${r.status}`);
+  }
+  return j;
+}
+
+// Links in (schon maskiertem) Text anklickbar machen
+function linkify(escaped) {
+  return escaped.replace(/(https?:\/\/|www\.)[^\s<]+/gi, (m) => {
+    let url = m, tail = '';
+    const cut = url.search(/&(quot|#39|lt|gt);/);
+    if (cut >= 0) { tail = url.slice(cut); url = url.slice(0, cut); }
+    const t = url.match(/[.,;:!?)\]»…]+$/);
+    if (t) {
+      const rest = url.slice(0, -t[0].length);
+      const open = (rest.match(/\(/g) || []).length, close = (rest.match(/\)/g) || []).length;
+      if (t[0].startsWith(')') && open > close) { tail = t[0].slice(1) + tail; url = rest + ')'; } // Wikipedia-Links mit Klammern
+      else { tail = t[0] + tail; url = rest; }
+    }
+    if (url.length < 5 || /^(https?:\/\/|www\.)$/i.test(url)) return m;
+    const href = /^www\./i.test(url) ? 'https://' + url : url;
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${url}</a>${tail}`;
+  });
+}
+
+function chatPreview(m) {
+  if (!m) return '';
+  if (m.image || m.imageGone) return '📷 Bild' + (m.text ? ' · ' + m.text : '');
+  return m.text || '';
+}
+
+// Bild im Browser verkleinern, bevor es hochgeladen wird (große Fotos vom Handy)
+async function shrinkImage(file) {
+  const okType = /^image\/(png|jpeg|gif)$/.test(file.type);
+  let bmp;
+  try { bmp = await createImageBitmap(file); } catch {
+    if (okType && file.size <= 10 << 20) return file;
+    throw new Error('Dieses Bild kann ich nicht lesen.');
+  }
+  const k = Math.min(1, 1920 / Math.max(bmp.width, bmp.height));
+  if (okType && k === 1 && file.size <= 3 << 20) { bmp.close?.(); return file; }
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+  const png = file.type === 'image/png' ? await new Promise((r) => c.toBlob(r, 'image/png')) : null;
+  if (png && png.size <= 3 << 20) return png;
+  return await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.86));
 }
 
 function ago(ts) {
@@ -696,8 +755,8 @@ function onChatEvent(m) {
   const viewing = S.view?.chatDevice === m.deviceId && !document.hidden;
   if (msg.from === 'pc' && !viewing) {
     c.unread = (c.unread || 0) + 1;
-    toast(`Nachricht von ${c.name}`, 'info', msg.text.slice(0, 160), 9000);
-    notifyDesktop(`Nachricht von ${c.name}`, msg.text, `#/messages/${m.deviceId}`, `chat-${m.deviceId}`);
+    toast(`Nachricht von ${c.name}`, 'info', chatPreview(msg).slice(0, 160), 9000);
+    notifyDesktop(`Nachricht von ${c.name}`, chatPreview(msg), `#/messages/${m.deviceId}`, `chat-${m.deviceId}`);
   }
   S.chats.set(m.deviceId, c);
   updateChatCount();
@@ -792,7 +851,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
   });
 }
 
-function chatBubbles(msgs) {
+function chatBubbles(msgs, devId) {
   if (!msgs.length) return `<div class="chat-empty">${icon('message', 22)}<p>Noch keine Nachrichten. Schreib etwas – am PC geht dann ein Fenster mit deiner Nachricht auf.</p></div>`;
   let lastDay = '';
   return msgs.map((m) => {
@@ -802,7 +861,16 @@ function chatBubbles(msgs) {
     lastDay = day;
     const mine = m.from === 'admin';
     const meta = `${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}${mine ? (m.read ? ' · gelesen' : ' · zugestellt') : ''}`;
-    return `${sep}<div class="msg ${mine ? 'mine' : 'theirs'}"><div class="bubble">${esc(m.text).replace(/\n/g, '<br>')}</div>
+    let body = '';
+    if (m.image) {
+      const src = `/api/devices/${encodeURIComponent(devId)}/chat/image/${encodeURIComponent(m.image.id)}`;
+      const k = Math.min(1, 320 / m.image.w, 260 / m.image.h);
+      body += `<a class="chat-img" href="${src}" target="_blank" rel="noopener" title="In voller Größe öffnen"><img src="${src}" alt="Bild" loading="lazy" width="${Math.max(48, Math.round(m.image.w * k))}" height="${Math.max(36, Math.round(m.image.h * k))}"></a>`;
+    } else if (m.imageGone) {
+      body += `<div class="chat-img gone">${icon('image', 18)}<span>Bild nicht mehr verfügbar</span></div>`;
+    }
+    if (m.text) body += `<div class="bubble">${linkify(esc(m.text)).replace(/\n/g, '<br>')}</div>`;
+    return `${sep}<div class="msg ${mine ? 'mine' : 'theirs'}">${body}
       <span class="msg-meta">${mine ? '' : `${esc(m.author || '')} · `}${esc(meta)}</span></div>`;
   }).join('');
 }
@@ -814,23 +882,81 @@ class ChatThread {
     const d = S.devices.get(this.id);
     this.el.innerHTML = `<div class="chat">
       <div class="chat-log" id="clog" aria-live="polite"></div>
-      <form class="chat-compose" id="cf"><textarea class="input" name="t" rows="2" maxlength="2000" placeholder="Antwort an ${esc(d ? d.name : 'den PC')} …" title="Enter sendet, Umschalt + Enter = neue Zeile"></textarea>
+      <div class="chat-attach" id="catt" hidden></div>
+      <form class="chat-compose" id="cf">
+        <button class="icon-btn" type="button" id="cattb" title="Bild anhängen (auch per Einfügen oder Hineinziehen)" aria-label="Bild anhängen">${icon('attach', 18)}</button>
+        <input type="file" id="cfile" accept="image/png,image/jpeg,image/gif,image/webp,image/heic" hidden>
+        <textarea class="input" name="t" rows="2" maxlength="2000" placeholder="Antwort an ${esc(d ? d.name : 'den PC')} …" title="Enter sendet, Umschalt + Enter = neue Zeile. Bilder: einfügen oder hineinziehen."></textarea>
         <button class="btn primary">${icon('send', 16)} Senden</button></form>
       <p class="small faint chat-hint" id="chint"></p></div>`;
     const f = $('#cf', this.el);
+    const fileIn = $('#cfile', this.el);
+    $('#cattb', this.el).onclick = () => fileIn.click();
+    fileIn.onchange = () => { if (fileIn.files[0]) this.attach(fileIn.files[0]); fileIn.value = ''; };
+    f.t.addEventListener('paste', (e) => {
+      const file = [...(e.clipboardData?.files || [])].find((x) => x.type.startsWith('image/'));
+      if (file) { e.preventDefault(); this.attach(file); }
+    });
+    const chat = $('.chat', this.el);
+    chat.addEventListener('dragover', (e) => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); chat.classList.add('drop'); } });
+    chat.addEventListener('dragleave', (e) => { if (!chat.contains(e.relatedTarget)) chat.classList.remove('drop'); });
+    chat.addEventListener('drop', (e) => {
+      chat.classList.remove('drop');
+      const file = [...e.dataTransfer.files].find((x) => x.type.startsWith('image/'));
+      if (file) { e.preventDefault(); this.attach(file); } else if (e.dataTransfer.files.length) { e.preventDefault(); toast('Nur Bilder', 'error', 'Hier lassen sich nur Bilder senden.'); }
+    });
     f.t.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); f.requestSubmit(); } };
     f.onsubmit = async (e) => {
       e.preventDefault();
       const t = f.t.value.trim();
-      if (!t) return;
-      f.t.value = '';
+      const img = this.pending;
+      if (!t && !img) return;
+      const btn = $('button.primary', f);
+      btn.disabled = true;
+      let delivered = true;
       try {
-        const r = await api('POST', `/api/devices/${this.id}/chat`, { text: t });
-        $('#chint', this.el).textContent = r.delivered ? '' : 'Gerade ist niemand am PC angemeldet – die Nachricht erscheint, sobald sich jemand anmeldet.';
-      } catch (ex) { f.t.value = t; toast('Nicht gesendet', 'error', ex.message); }
+        this.forceEnd = true;
+        if (img) {
+          const r = await apiRaw(`/api/devices/${this.id}/chat/image`, img);
+          delivered = r.delivered;
+          this.clearAttach();
+        }
+        if (t) {
+          f.t.value = '';
+          const r = await api('POST', `/api/devices/${this.id}/chat`, { text: t });
+          delivered = r.delivered;
+        }
+        $('#chint', this.el).textContent = delivered ? '' : 'Gerade ist niemand am PC angemeldet – die Nachricht erscheint, sobald sich jemand anmeldet.';
+      } catch (ex) { if (t && !f.t.value) f.t.value = t; toast('Nicht gesendet', 'error', ex.message); }
+      btn.disabled = false;
     };
     await this.refresh();
     f.t.focus();
+  }
+  async attach(file) {
+    const box = $('#catt', this.el);
+    box.hidden = false;
+    box.innerHTML = `<div class="att-thumb">${icon('image', 18)}</div><div class="grow"><b>Bild wird vorbereitet …</b></div>`;
+    try {
+      const blob = await shrinkImage(file);
+      if (blob.size > 10 << 20) throw new Error('Das Bild ist zu groß (höchstens 10 MB).');
+      this.clearAttach();
+      this.pending = blob;
+      this.previewUrl = URL.createObjectURL(blob);
+      const size = blob.size >= 1 << 20 ? (blob.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(blob.size / 1024)) + ' KB';
+      box.hidden = false;
+      box.innerHTML = `<img class="att-thumb" src="${this.previewUrl}" alt=""><div class="grow"><b>Bild angehängt</b><span class="small faint">${esc(file.name || 'Bild')} · ${size}</span></div>
+        <button class="icon-btn" type="button" id="cattx" title="Entfernen" aria-label="Bild entfernen">${icon('x', 16)}</button>`;
+      $('#cattx', box).onclick = () => this.clearAttach();
+      $('#cf', this.el).t.focus();
+    } catch (ex) { this.clearAttach(); toast('Bild geht nicht', 'error', ex.message); }
+  }
+  clearAttach() {
+    this.pending = null;
+    if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
+    this.previewUrl = null;
+    const box = $('#catt', this.el);
+    if (box) { box.hidden = true; box.innerHTML = ''; }
   }
   async refresh() {
     const r = await api('GET', `/api/devices/${this.id}/chat`).catch(() => null);
@@ -843,9 +969,13 @@ class ChatThread {
   draw() {
     const log = $('#clog', this.el);
     if (!log) return;
-    const atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
-    log.innerHTML = chatBubbles(this.msgs);
-    if (atEnd || !this.drawn) log.scrollTop = log.scrollHeight;
+    const atEnd = this.forceEnd || log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+    this.forceEnd = false;
+    log.innerHTML = chatBubbles(this.msgs, this.id);
+    if (atEnd || !this.drawn) {
+      log.scrollTop = log.scrollHeight;
+      $$('img', log).forEach((i) => { if (!i.complete) i.addEventListener('load', () => { log.scrollTop = log.scrollHeight; }, { once: true }); });
+    }
     this.drawn = true;
   }
   onChat(m) {
@@ -875,7 +1005,7 @@ class MessagesView {
     if (this.sel && !list.some((c) => c.deviceId === this.sel) && S.devices.has(this.sel)) list.unshift({ deviceId: this.sel, name: S.devices.get(this.sel).name, unread: 0 });
     box.innerHTML = list.length ? list.map((c) => {
       const d = S.devices.get(c.deviceId);
-      const last = c.last ? `${c.last.from === 'admin' ? 'Du: ' : ''}${c.last.text}` : 'Noch keine Nachrichten';
+      const last = c.last ? `${c.last.from === 'admin' ? 'Du: ' : ''}${chatPreview(c.last)}` : 'Noch keine Nachrichten';
       return `<a class="conv ${c.deviceId === this.sel ? 'active' : ''} ${c.unread ? 'unread' : ''}" href="#/messages/${esc(c.deviceId)}">
         <div class="dev-ico ${d?.online ? 'on' : ''}">${icon('monitor', 16)}</div>
         <div class="grow"><div class="conv-top"><b>${esc(d?.name || c.name)}</b><span>${c.last ? esc(ago(c.last.at)) : ''}</span></div>

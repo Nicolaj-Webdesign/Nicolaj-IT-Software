@@ -130,6 +130,9 @@ type ChatMsg struct {
 	Text   string    `json:"text"`
 	At     time.Time `json:"at"`
 	Read   bool      `json:"read"` // von der Gegenseite gelesen
+
+	Image     *ChatImage `json:"image,omitempty"`
+	ImageGone bool       `json:"imageGone,omitempty"` // Bild wegen Speichergrenze gelöscht
 }
 
 type Script struct {

@@ -35,7 +35,13 @@ func cleanChatText(s string) string {
 }
 
 func chatView(m *ChatMsg) map[string]any {
-	return map[string]any{"id": m.ID, "from": m.From, "author": m.Author, "text": m.Text, "at": m.At, "read": m.Read}
+	v := map[string]any{"id": m.ID, "from": m.From, "author": m.Author, "text": m.Text, "at": m.At, "read": m.Read}
+	if m.Image != nil {
+		v["image"] = map[string]any{"id": m.Image.ID, "w": m.Image.W, "h": m.Image.H, "type": m.Image.Type}
+	} else if m.ImageGone {
+		v["imageGone"] = true
+	}
+	return v
 }
 
 func addChat(d *DBData, devID string, m *ChatMsg) {
@@ -56,8 +62,8 @@ func (a *App) agentChatGet(w http.ResponseWriter, r *http.Request, devID, role s
 	marked := false
 	a.store.Update(func(d *DBData) {
 		list := d.Chats[devID]
-		if len(list) > 50 {
-			list = list[len(list)-50:]
+		if len(list) > 100 {
+			list = list[len(list)-100:]
 		}
 		for _, m := range list {
 			if m.From == "admin" && !m.Read {
@@ -119,6 +125,7 @@ func (a *App) agentChatPost(w http.ResponseWriter, r *http.Request, devID, role 
 		writeErr(w, 404, "Gerät nicht gefunden.")
 		return
 	}
+	go a.pruneChatImages(devID)
 	a.hub.Broadcast("chat", map[string]any{"deviceId": devID, "deviceName": devName, "message": chatView(msg)})
 	a.push("Nachricht von "+devName, text, "/admin/#/messages/"+devID, "chat-"+devID)
 	writeJSON(w, 200, chatView(msg))
@@ -233,6 +240,7 @@ func (a *App) apiDeviceChatPost(w http.ResponseWriter, r *http.Request, user str
 		writeErr(w, 404, "Gerät nicht gefunden.")
 		return
 	}
+	go a.pruneChatImages(id)
 	delivered := a.hub.SendToAgent(id, "screen", "chat", chatView(msg))
 	a.audit(r, user, id, "Nachricht gesendet", "an „"+devName+"“")
 	a.hub.Broadcast("chat", map[string]any{"deviceId": id, "deviceName": devName, "message": chatView(msg)})

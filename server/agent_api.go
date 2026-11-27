@@ -456,6 +456,7 @@ func (a *App) agentGoodbye(w http.ResponseWriter, r *http.Request, devID, role s
 			name = dev.Name
 			delete(d.Devices, devID)
 			delete(d.Chats, devID)
+			defer a.removeChatImages(devID)
 			d.Audit = append(d.Audit, &AuditEntry{Time: time.Now(), User: "PC", IP: clientIP(r), DeviceID: devID,
 				Action: "Agent deinstalliert", Detail: "Der Agent wurde auf „" + name + "“ entfernt."})
 		}

@@ -6,6 +6,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
+	"image"
+	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -90,6 +95,7 @@ func showChat(c *Client, incoming bool) {
 		chatOpen = false
 		chatMu.Unlock()
 	}()
+	cleanChatTemp()
 
 	msgs, herr := c.chatHistory()
 	note := ""
@@ -101,92 +107,383 @@ func showChat(c *Client, incoming bool) {
 	}
 	var (
 		mu      sync.Mutex
+		list    = chatVisible(msgs)
 		sig     = chatSignature(msgs)
 		closed  atomic.Bool
 		sending atomic.Bool
+		thumbs  = map[string]*uiImage{}
+		failed  = map[string]bool{}
+		loading = map[string]bool{}
+		files   = map[string]string{} // Bild-ID → Datei im Temp-Ordner
+		att     *preparedImage        // angehängtes Bild
+		attBusy bool
+		sem     = make(chan struct{}, 2) // höchstens zwei Bilder gleichzeitig laden
 	)
+	thumbOf := func(id string) (*uiImage, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		return thumbs[id], failed[id]
+	}
+	rebuild := func(ctl *uiCtl) {
+		mu.Lock()
+		l := list
+		mu.Unlock()
+		ctl.Update(func(d *uiDialog) { d.Chat = chatToUI(l, thumbOf) })
+	}
+	msgAt := func(id string) (chatMsg, bool) { // "msg:N" / "img:N" → Nachricht
+		_, n, ok := strings.Cut(id, ":")
+		if !ok {
+			return chatMsg{}, false
+		}
+		i := 0
+		for _, ch := range n {
+			i = i*10 + int(ch-'0')
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if i < 0 || i >= len(list) {
+			return chatMsg{}, false
+		}
+		return list[i], true
+	}
+	// Bild herunterladen und im Temp-Ordner ablegen (zum Öffnen, Speichern, Kopieren)
+	imageFile := func(ci *chatImage) (string, error) {
+		mu.Lock()
+		p, ok := files[ci.ID]
+		mu.Unlock()
+		if ok {
+			if _, err := os.Stat(p); err == nil {
+				return p, nil
+			}
+		}
+		data, err := c.chatImageData(ci.ID)
+		if err != nil {
+			return "", err
+		}
+		p = filepath.Join(chatTempDir(), "Bild-"+ci.ID+"."+ci.ext())
+		if err := os.WriteFile(p, data, 0o600); err != nil {
+			return "", err
+		}
+		mu.Lock()
+		files[ci.ID] = p
+		mu.Unlock()
+		return p, nil
+	}
+	loadThumbs := func(ctl *uiCtl) {
+		mu.Lock()
+		var todo []*chatImage
+		for _, m := range list {
+			if ci := m.Image; ci != nil && thumbs[ci.ID] == nil && !failed[ci.ID] && !loading[ci.ID] {
+				loading[ci.ID] = true
+				todo = append(todo, ci)
+			}
+		}
+		mu.Unlock()
+		for _, ci := range todo {
+			go func(ci *chatImage) {
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				var th *uiImage
+				p, err := imageFile(ci)
+				if err == nil {
+					var b []byte
+					if b, err = os.ReadFile(p); err == nil {
+						var img image.Image
+						if img, _, err = decodeImageLimited(b); err == nil {
+							k := math.Min(2, uiScale()) // so groß wie angezeigt (höchstens 300 × 240), nicht größer
+							th = newUIImage(ci.ID, img, int(300*k), int(240*k))
+						}
+					}
+				}
+				mu.Lock()
+				delete(loading, ci.ID)
+				if th != nil {
+					thumbs[ci.ID] = th
+				} else {
+					failed[ci.ID] = true
+				}
+				mu.Unlock()
+				if !closed.Load() {
+					rebuild(ctl)
+				}
+			}(ci)
+		}
+	}
+	refresh := func(ctl *uiCtl) {
+		l, err := c.chatHistory()
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		s := chatSignature(l)
+		changed := s != sig
+		sig = s
+		if changed {
+			list = chatVisible(l)
+		}
+		mu.Unlock()
+		if changed {
+			rebuild(ctl)
+			loadThumbs(ctl)
+		}
+	}
 	draft := func(d *uiDialog) string {
 		if d.Input == nil {
 			return ""
 		}
 		return d.Input.Value
 	}
-	refresh := func(ctl *uiCtl) {
-		list, err := c.chatHistory()
-		if err != nil {
+	updateSend := func(ctl *uiCtl) {
+		mu.Lock()
+		hasAtt := att != nil
+		mu.Unlock()
+		ctl.Update(func(d *uiDialog) {
+			if b := d.button("send"); b != nil {
+				b.Disabled = (strings.TrimSpace(draft(d)) == "" && !hasAtt) || sending.Load()
+			}
+		})
+	}
+	// Bild anhängen: vorbereiten (verkleinern) läuft im Hintergrund
+	attach := func(ctl *uiCtl, label string, prep func() (*preparedImage, error)) {
+		mu.Lock()
+		if attBusy {
+			mu.Unlock()
 			return
 		}
-		mu.Lock()
-		s := chatSignature(list)
-		changed := s != sig
-		sig = s
+		attBusy = true
 		mu.Unlock()
-		if changed {
-			ctl.Update(func(d *uiDialog) { d.Chat = chatToUI(list) })
-		}
-	}
-	send := func(ctl *uiCtl, text string) {
-		defer sending.Store(false)
-		var err error
-		for i := 0; i < 3; i++ { // kurze Aussetzer überbrücken
-			if err = c.chatSend(text); err == nil {
-				break
+		ctl.Update(func(d *uiDialog) { d.Attach, d.Note = &uiAttach{Busy: true, Label: label}, "" })
+		go func() {
+			p, err := prep()
+			var th *uiImage
+			if err == nil {
+				th = newUIImage("anhang", p.Img, 120, 120)
 			}
-			time.Sleep(2 * time.Second)
+			mu.Lock()
+			attBusy = false
+			if err == nil {
+				att = p
+			}
+			mu.Unlock()
+			ctl.Update(func(d *uiDialog) {
+				if err != nil {
+					d.Attach, d.Note = nil, err.Error()
+					return
+				}
+				d.Attach = &uiAttach{Img: th, Label: fmt.Sprintf("%s · %d × %d · %s", label, p.W, p.H, sizeText(len(p.Data)))}
+			})
+			updateSend(ctl)
+		}()
+	}
+	attachFile := func(ctl *uiCtl, path string) {
+		if !isImageFile(path) {
+			ctl.Update(func(d *uiDialog) { d.Note = errNoImage.Error() })
+			return
+		}
+		attach(ctl, filepath.Base(path), func() (*preparedImage, error) { return loadImageFile(path) })
+	}
+	send := func(ctl *uiCtl, text string, img *preparedImage) {
+		defer sending.Store(false)
+		try := func(f func() error) (err error) {
+			for i := 0; i < 3; i++ { // kurze Aussetzer überbrücken
+				if err = f(); err == nil || errors.Is(err, errUnauthorized) {
+					return err
+				}
+				time.Sleep(2 * time.Second)
+			}
+			return err
+		}
+		var err error
+		if img != nil {
+			err = try(func() error { return c.chatSendImage(img) })
+		}
+		if err == nil && text != "" {
+			err = try(func() error { return c.chatSend(text) })
+			if err != nil {
+				img = nil // Bild ist schon angekommen
+			}
 		}
 		if err != nil {
+			mu.Lock()
+			if img != nil && att == nil {
+				att = img
+			}
+			restore := att
+			mu.Unlock()
 			ctl.Update(func(d *uiDialog) {
 				if d.Input != nil && strings.TrimSpace(d.Input.Value) == "" {
 					d.Input.Value = text
 				}
-				d.Note = "Nicht gesendet: " + err.Error()
-				if b := d.button("send"); b != nil {
-					b.Disabled = false
+				if restore != nil && d.Attach == nil {
+					d.Attach = &uiAttach{Img: newUIImage("anhang", restore.Img, 120, 120), Label: "Noch nicht gesendet"}
 				}
+				d.Note = "Nicht gesendet: " + err.Error()
 			})
+			updateSend(ctl)
 			return
 		}
 		ctl.Update(func(d *uiDialog) { d.Note = "Gesendet ✓ – Nicolaj bekommt deine Nachricht im Dashboard." })
+		ctl.State(func(st *uiState) { st.Unstuck = false })
 		refresh(ctl)
+		updateSend(ctl)
 	}
+	openImage := func(ctl *uiCtl, m chatMsg) {
+		if m.Image == nil {
+			return
+		}
+		go func() {
+			p, err := imageFile(m.Image)
+			if err != nil {
+				ctl.Update(func(d *uiDialog) { d.Note = "Bild konnte nicht geöffnet werden: " + err.Error() })
+				return
+			}
+			shellOpen(p)
+		}()
+	}
+
 	opts := uiOpts{Title: chatTitle, Topmost: incoming,
 		OnClick: func(ctl *uiCtl, id string) bool {
-			switch id {
-			case "input-changed":
-				ctl.Update(func(d *uiDialog) {
-					if b := d.button("send"); b != nil {
-						b.Disabled = strings.TrimSpace(draft(d)) == "" || sending.Load()
-					}
-				})
-				return false
-			case "send":
+			switch {
+			case id == "input-changed":
+				updateSend(ctl)
+			case id == "send":
 				if !sending.CompareAndSwap(false, true) {
+					return false
+				}
+				mu.Lock()
+				img := att
+				busy := attBusy
+				mu.Unlock()
+				if busy {
+					sending.Store(false)
 					return false
 				}
 				var text string
 				ctl.Update(func(d *uiDialog) {
 					text = strings.TrimSpace(draft(d))
-					if text == "" {
+					if text == "" && img == nil {
 						return
 					}
 					d.Input.Value = ""
+					d.Attach = nil
 					d.Note = "Wird gesendet …"
 					if b := d.button("send"); b != nil {
 						b.Disabled = true
 					}
 				})
-				if text == "" {
+				if text == "" && img == nil {
 					sending.Store(false)
 					return false
 				}
-				go send(ctl, text)
-				return false
-			case "close":
+				mu.Lock()
+				att = nil
+				mu.Unlock()
+				go send(ctl, text, img)
+			case id == "attach":
+				if p, ok := pickImageFile(ctl.Hwnd()); ok {
+					attachFile(ctl, p)
+				}
+			case id == "unattach":
+				mu.Lock()
+				att = nil
+				mu.Unlock()
+				ctl.Update(func(d *uiDialog) { d.Attach = nil })
+				updateSend(ctl)
+			case strings.HasPrefix(id, "img:"):
+				if m, ok := msgAt(id); ok {
+					openImage(ctl, m)
+				}
+			case id == "close":
 				return true
 			}
 			return false
 		},
+		OnMenu: func(ctl *uiCtl, id string) []uiMenuItem {
+			if !strings.HasPrefix(id, "msg:") && !strings.HasPrefix(id, "img:") {
+				return nil
+			}
+			m, ok := msgAt(id)
+			if !ok {
+				return nil
+			}
+			var items []uiMenuItem
+			if t := strings.TrimSpace(m.Text); t != "" {
+				items = append(items, uiMenuItem{Label: "Text kopieren", Do: func() {
+					setClipboard(ctl.Hwnd(), strings.ReplaceAll(t, "\n", "\r\n"))
+					ctl.Update(func(d *uiDialog) { d.Note = "Text kopiert – mit Strg+V einfügen." })
+				}})
+			}
+			if ci := m.Image; ci != nil {
+				items = append(items,
+					uiMenuItem{Label: "Bild öffnen", Do: func() { openImage(ctl, m) }},
+					uiMenuItem{Label: "Bild kopieren", Do: func() {
+						go func() {
+							msg := "Bild kopiert – mit Strg+V einfügen."
+							p, err := imageFile(ci)
+							var b []byte
+							var img image.Image
+							if err == nil {
+								if b, err = os.ReadFile(p); err == nil {
+									img, _, err = decodeImageLimited(b)
+								}
+							}
+							if err != nil || !setClipboardImage(ctl.Hwnd(), img) {
+								msg = "Bild konnte nicht kopiert werden."
+							}
+							ctl.Update(func(d *uiDialog) { d.Note = msg })
+						}()
+					}},
+					uiMenuItem{Label: "Bild speichern unter …", Do: func() {
+						dst, ok := pickSavePath(ctl.Hwnd(), "Bild von Nicolaj "+m.At.Local().Format("2006-01-02 15-04")+"."+ci.ext(), ci.ext())
+						if !ok {
+							return
+						}
+						go func() {
+							msg := "Gespeichert: " + filepath.Base(dst)
+							p, err := imageFile(ci)
+							var b []byte
+							if err == nil {
+								if b, err = os.ReadFile(p); err == nil {
+									err = os.WriteFile(dst, b, 0o644)
+								}
+							}
+							if err != nil {
+								msg = "Nicht gespeichert: " + err.Error()
+							}
+							ctl.Update(func(d *uiDialog) { d.Note = msg })
+						}()
+					}})
+			}
+			return items
+		},
+		OnPaste: func(ctl *uiCtl) bool {
+			img, paths, hasText := clipboardContent(ctl.Hwnd())
+			if hasText {
+				return false
+			}
+			if img != nil {
+				attach(ctl, "Screenshot", func() (*preparedImage, error) { return prepareChatImage(img, false, 1) })
+				return true
+			}
+			for _, p := range paths {
+				if isImageFile(p) {
+					attachFile(ctl, p)
+					return true
+				}
+			}
+			return false
+		},
+		OnDrop: func(ctl *uiCtl, paths []string) {
+			for _, p := range paths {
+				if isImageFile(p) {
+					attachFile(ctl, p)
+					return
+				}
+			}
+			ctl.Update(func(d *uiDialog) { d.Note = "Hier lassen sich nur Bilder senden (PNG, JPG, GIF oder BMP)." })
+		},
 		Ready: func(ctl *uiCtl) {
+			loadThumbs(ctl)
 			t := time.NewTicker(3 * time.Second)
 			defer t.Stop()
 			for !closed.Load() {
@@ -203,7 +500,7 @@ func showChat(c *Client, incoming bool) {
 	if incoming {
 		opts.Beep = 0x40
 	}
-	_, uerr := runUI(dlgChat(chatToUI(msgs), "", note), opts)
+	_, uerr := runUI(dlgChat(chatToUI(list, thumbOf), "", note), opts)
 	closed.Store(true)
 	select {
 	case chatRefresh <- struct{}{}: // Abfrage-Schleife beenden
@@ -212,6 +509,31 @@ func showChat(c *Client, incoming bool) {
 	if uerr != nil && incoming { // Rückfall: wenigstens die letzte Antwort zeigen
 		if len(msgs) > 0 {
 			showMessageClassic(msgs[len(msgs)-1].Text)
+		}
+	}
+}
+
+func sizeText(n int) string {
+	if n >= 1<<20 {
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	}
+	return fmt.Sprintf("%d KB", max(1, n>>10))
+}
+
+// chatTempDir: Ordner für heruntergeladene Bilder (gehört der angemeldeten Person).
+func chatTempDir() string {
+	d := filepath.Join(os.TempDir(), "NicolajFernwartung")
+	os.MkdirAll(d, 0o700)
+	return d
+}
+
+// cleanChatTemp löscht Bilder, die älter als eine Woche sind.
+func cleanChatTemp() {
+	d := chatTempDir()
+	entries, _ := os.ReadDir(d)
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && !e.IsDir() && time.Since(info.ModTime()) > 7*24*time.Hour {
+			os.Remove(filepath.Join(d, e.Name()))
 		}
 	}
 }

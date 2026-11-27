@@ -194,9 +194,9 @@ func dlgChat(msgs []uiChatMsg, draft, note string) *uiDialog {
 		msgs = []uiChatMsg{}
 	}
 	return &uiDialog{Width: 460, Title: "Nachricht an Nicolaj", Body: "Nicolaj antwortet dir hier – meist noch am selben Tag.",
-		Chat: msgs, ChatHint: "Schreib einfach, wobei du Hilfe brauchst. Die Antwort erscheint hier und das Fenster geht von selbst auf.",
-		Input:    &uiInput{Placeholder: "Deine Nachricht …", Value: draft, MaxLen: 2000, Multiline: true},
-		Progress: -1, Note: note, Closable: true,
+		Chat: msgs, ChatHint: "Schreib einfach, wobei du Hilfe brauchst. Screenshots kannst du mit Strg+V einfügen. Die Antwort erscheint hier.",
+		Input:     &uiInput{Placeholder: "Nachricht … (Bild: Strg+V)", Value: draft, MaxLen: 2000, Multiline: true},
+		CanAttach: true, Progress: -1, Note: note, Closable: true,
 		Buttons: []uiBtn{{ID: "close", Label: "Schließen", Kind: "secondary"},
 			{ID: "send", Label: "Senden", Kind: "primary", Disabled: strings.TrimSpace(draft) == ""}}}
 }

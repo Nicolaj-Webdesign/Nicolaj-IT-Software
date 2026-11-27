@@ -166,6 +166,9 @@ func (a *App) apiDeviceDelete(w http.ResponseWriter, r *http.Request, user strin
 			delete(d.Chats, id)
 		}
 	})
+	if name != "" {
+		a.removeChatImages(id)
+	}
 	if name == "" {
 		writeErr(w, 404, "Gerät nicht gefunden.")
 		return

@@ -43,16 +43,19 @@ var (
 	puSystemParamsInfo    = user32.NewProc("SystemParametersInfoW")
 	puGetKeyState         = user32.NewProc("GetKeyState")
 
-	puCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
-	puGetTextExtentPoint = gdi32.NewProc("GetTextExtentPoint32W")
-	puGetTextFaceW       = gdi32.NewProc("GetTextFaceW")
-	puCreateBitmap       = gdi32.NewProc("CreateBitmap")
-	puGdiFlush           = gdi32.NewProc("GdiFlush")
-	puGlobalAlloc        = kernel32.NewProc("GlobalAlloc")
-	puGlobalLock         = kernel32.NewProc("GlobalLock")
-	puGlobalUnlock       = kernel32.NewProc("GlobalUnlock")
-	puGlobalFree         = kernel32.NewProc("GlobalFree")
-	puGlobalSize         = kernel32.NewProc("GlobalSize")
+	puCreateDIBSection    = gdi32.NewProc("CreateDIBSection")
+	puGetTextExtentPoint  = gdi32.NewProc("GetTextExtentPoint32W")
+	puGetTextFaceW        = gdi32.NewProc("GetTextFaceW")
+	puCreateBitmap        = gdi32.NewProc("CreateBitmap")
+	puGdiFlush            = gdi32.NewProc("GdiFlush")
+	procSaveDC            = gdi32.NewProc("SaveDC")
+	procRestoreDC         = gdi32.NewProc("RestoreDC")
+	procIntersectClipRect = gdi32.NewProc("IntersectClipRect")
+	puGlobalAlloc         = kernel32.NewProc("GlobalAlloc")
+	puGlobalLock          = kernel32.NewProc("GlobalLock")
+	puGlobalUnlock        = kernel32.NewProc("GlobalUnlock")
+	puGlobalFree          = kernel32.NewProc("GlobalFree")
+	puGlobalSize          = kernel32.NewProc("GlobalSize")
 )
 
 const (
@@ -65,6 +68,9 @@ const (
 	wmLButtonDown = 0x0201
 	wmLButtonUp   = 0x0202
 	wmMouseLeave  = 0x02A3
+	wmRButtonUp   = 0x0205
+	wmMouseWheel  = 0x020A
+	wmDropFiles   = 0x0233
 	wmAppUpdate   = 0x8001
 	wmAppClose    = 0x8002
 
@@ -206,40 +212,58 @@ func (r *uiRenderer) ensure(w, h int) bool {
 	return true
 }
 
-// render zeichnet die Szene in die Bitmap (Formen in Go, Text mit GDI).
+// render zeichnet die Szene in die Bitmap (Formen in Go, Text mit GDI), Ebene für Ebene.
 func (r *uiRenderer) render(s *uiScene, margin float64) bool {
-	c := renderShapes(s, r.scale, margin)
+	c := sceneCanvas(s, r.scale, margin)
 	if !r.ensure(c.W, c.H) {
 		return false
 	}
 	dst := unsafe.Slice((*byte)(r.bits), c.W*c.H*4)
-	copy(dst, c.Pix)
-	for i := range r.saved {
-		r.saved[i] = dst[i*4+3]
-	}
 	procSetBkMode.Call(r.dc, 1) // TRANSPARENT
-	for _, o := range s.Ops {
-		if o.Kind != opText || o.Text == "" {
-			continue
+	layers := s.layers()
+	for li, ops := range layers {
+		c.paintOps(s, ops)
+		copy(dst, c.Pix)
+		for i := range r.saved {
+			r.saved[i] = dst[i*4+3]
 		}
-		procSelectObject.Call(r.dc, r.font(o.Font))
-		procSetTextColor.Call(r.dc, uintptr(o.Col.R)|uintptr(o.Col.G)<<8|uintptr(o.Col.B)<<16)
-		rc := rect{
-			Left: int32(math.Round((o.X + margin) * r.scale)), Top: int32(math.Round((o.Y + margin) * r.scale)),
-			Right: int32(math.Round((o.X + o.W + margin) * r.scale)), Bottom: int32(math.Round((o.Y + o.H + margin) * r.scale)),
+		for _, o := range ops {
+			if o.Kind != opText || o.Text == "" {
+				continue
+			}
+			procSelectObject.Call(r.dc, r.font(o.Font))
+			procSetTextColor.Call(r.dc, uintptr(o.Col.R)|uintptr(o.Col.G)<<8|uintptr(o.Col.B)<<16)
+			rc := rect{
+				Left: int32(math.Round((o.X + margin) * r.scale)), Top: int32(math.Round((o.Y + margin) * r.scale)),
+				Right: int32(math.Round((o.X + o.W + margin) * r.scale)), Bottom: int32(math.Round((o.Y + o.H + margin) * r.scale)),
+			}
+			flags := uintptr(0x20 | 0x04 | 0x800 | 0x100) // SINGLELINE | VCENTER | NOPREFIX | NOCLIP
+			switch o.Align {
+			case 1:
+				flags |= 0x01
+			case 2:
+				flags |= 0x02
+			}
+			clipped := false
+			if cl := o.Clip; cl != nil { // Scrollbereich: Text nur darin zeichnen
+				procSaveDC.Call(r.dc)
+				procIntersectClipRect.Call(r.dc,
+					uintptr(int32(math.Floor((cl.X+margin)*r.scale))), uintptr(int32(math.Floor((cl.Y+margin)*r.scale))),
+					uintptr(int32(math.Ceil((cl.X+cl.W+margin)*r.scale))), uintptr(int32(math.Ceil((cl.Y+cl.H+margin)*r.scale))))
+				clipped = true
+			}
+			procDrawTextW.Call(r.dc, uintptr(unsafe.Pointer(utf16Ptr(o.Text))), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), flags)
+			if clipped {
+				procRestoreDC.Call(r.dc, ^uintptr(0)) // -1: zuletzt gesicherter Zustand
+			}
 		}
-		flags := uintptr(0x20 | 0x04 | 0x800 | 0x100) // SINGLELINE | VCENTER | NOPREFIX | NOCLIP
-		switch o.Align {
-		case 1:
-			flags |= 0x01
-		case 2:
-			flags |= 0x02
+		puGdiFlush.Call()
+		for i, a := range r.saved { // GDI setzt bei Text das Alpha auf 0 – Text liegt immer auf deckenden Flächen
+			dst[i*4+3] = a
 		}
-		procDrawTextW.Call(r.dc, uintptr(unsafe.Pointer(utf16Ptr(o.Text))), ^uintptr(0), uintptr(unsafe.Pointer(&rc)), flags)
-	}
-	puGdiFlush.Call()
-	for i, a := range r.saved { // GDI setzt bei Text das Alpha auf 0 – Text liegt immer auf deckenden Flächen
-		dst[i*4+3] = a
+		if li < len(layers)-1 { // nächste Ebene zeichnet über den Text
+			copy(c.Pix, dst)
+		}
 	}
 	return true
 }
@@ -274,6 +298,17 @@ type uiOpts struct {
 	OnClick   func(ctl *uiCtl, id string) bool // true = Fenster schließen
 	Ready     func(ctl *uiCtl)
 	Ctx       context.Context
+
+	OnMenu  func(ctl *uiCtl, id string) []uiMenuItem // Rechtsklick-Menü (zusätzlich zu Eingabefeld/Links)
+	OnPaste func(ctl *uiCtl) bool                    // Strg+V: true = erledigt (z. B. Bild)
+	OnDrop  func(ctl *uiCtl, paths []string)         // Dateien ins Fenster gezogen
+}
+
+type uiMenuItem struct {
+	Label    string
+	Do       func()
+	Disabled bool
+	Sep      bool // Trennlinie
 }
 
 type uiWin struct {
@@ -290,6 +325,9 @@ type uiWin struct {
 	shown    bool
 	progress float64
 	left     int
+	chatN    int     // Anzahl Nachrichten beim letzten Zeichnen
+	dragY    float64 // Scrollleiste ziehen: Startpunkt
+	dragS    float64
 }
 
 type uiCtl struct{ w *uiWin }
@@ -317,6 +355,16 @@ func (c *uiCtl) Update(fn func(d *uiDialog)) {
 	c.w.mu.Unlock()
 	procPostMessageW.Call(c.w.hwnd, wmAppUpdate, 0, 0)
 }
+
+// State ändert den Zustand (z. B. ans Ende scrollen).
+func (c *uiCtl) State(fn func(st *uiState)) {
+	c.w.mu.Lock()
+	fn(&c.w.st)
+	c.w.mu.Unlock()
+	procPostMessageW.Call(c.w.hwnd, wmAppUpdate, 0, 0)
+}
+
+func (c *uiCtl) Hwnd() uintptr { return c.w.hwnd }
 
 func (c *uiCtl) Close(result string) {
 	c.w.mu.Lock()
@@ -360,8 +408,43 @@ func (w *uiWin) layout() *uiScene {
 		}
 		d.Progress = w.progress
 	}
+	if n := len(d.Chat); d.Chat != nil && n != w.chatN {
+		if n > w.chatN && w.chatN > 0 && w.st.Unstuck {
+			w.st.NewBelow = true
+		}
+		w.chatN = n
+	}
 	w.scene = layoutDialog(&d, w.st, w.r)
+	if !w.st.Unstuck {
+		w.st.NewBelow = false
+	}
+	w.st.Scroll = w.scene.ScrollY
 	return w.scene
+}
+
+// scrollTo setzt die Position im Chat (am Ende folgt die Ansicht wieder neuen Nachrichten).
+func (w *uiWin) scrollTo(y float64) {
+	w.mu.Lock()
+	s := w.scene
+	if s == nil || s.ScrollMax <= 0 {
+		w.mu.Unlock()
+		return
+	}
+	y = math.Max(0, math.Min(s.ScrollMax, y))
+	w.st.Scroll = y
+	w.st.Unstuck = y < s.ScrollMax-1
+	if !w.st.Unstuck {
+		w.st.NewBelow = false
+	}
+	w.mu.Unlock()
+	w.redraw()
+}
+
+func (w *uiWin) scrollBy(dy float64) {
+	w.mu.Lock()
+	y := w.st.Scroll
+	w.mu.Unlock()
+	w.scrollTo(y + dy)
 }
 
 func (w *uiWin) redraw() {
@@ -434,6 +517,18 @@ func (w *uiWin) activate(id string) {
 		}
 		return
 	}
+	switch {
+	case id == "scroll" || strings.HasPrefix(id, "msg:"):
+		return
+	case id == "newbelow":
+		w.scrollTo(math.MaxFloat64)
+		return
+	case strings.HasPrefix(id, "link:"):
+		if u := w.link(id); u != "" {
+			openURL(u)
+		}
+		return
+	}
 	w.mu.Lock()
 	if w.dlg != nil {
 		if b := w.dlg.button(id); b != nil && b.Disabled {
@@ -462,6 +557,146 @@ func (w *uiWin) activate(id string) {
 	}
 }
 
+// contextMenu zeigt das Rechtsklick-Menü für die Stelle unter der Maus.
+func (w *uiWin) contextMenu(id string) {
+	var items []uiMenuItem
+	switch {
+	case id == "input" || id == "attach":
+		v := w.inputText()
+		items = []uiMenuItem{
+			{Label: "Einfügen\tStrg+V", Do: w.paste},
+			{Label: "Alles markieren\tStrg+A", Disabled: v == "", Do: func() { w.setState(func(st *uiState) { st.SelAll = true }) }},
+			{Label: "Alles kopieren", Disabled: v == "", Do: func() { setClipboard(w.hwnd, strings.ReplaceAll(v, "\n", "\r\n")) }},
+			{Label: "Alles ausschneiden", Disabled: v == "", Do: func() {
+				setClipboard(w.hwnd, strings.ReplaceAll(v, "\n", "\r\n"))
+				w.mu.Lock()
+				if w.dlg != nil && w.dlg.Input != nil {
+					w.dlg.Input.Value, w.st.SelAll = "", false
+				}
+				w.mu.Unlock()
+				w.changed()
+			}},
+		}
+	case strings.HasPrefix(id, "link:"):
+		if u := w.link(id); u != "" {
+			items = []uiMenuItem{{Label: "Link öffnen", Do: func() { openURL(u) }}, {Label: "Link kopieren", Do: func() { setClipboard(w.hwnd, u) }}}
+		}
+	}
+	if w.opts.OnMenu != nil && id != "" {
+		extra := w.opts.OnMenu(&uiCtl{w}, id)
+		if len(items) > 0 && len(extra) > 0 {
+			items = append(items, uiMenuItem{Sep: true})
+		}
+		items = append(items, extra...)
+	}
+	if len(items) == 0 {
+		return
+	}
+	menu, _, _ := puCreatePopupMenu.Call()
+	if menu == 0 {
+		return
+	}
+	defer puDestroyMenu.Call(menu)
+	for i, it := range items {
+		flags := uintptr(0) // MF_STRING
+		if it.Sep {
+			flags = 0x800 // MF_SEPARATOR
+		} else if it.Disabled {
+			flags = 0x1 | 0x2 // MF_GRAYED | MF_DISABLED
+		}
+		puAppendMenuW.Call(menu, flags, uintptr(i+1), uintptr(unsafe.Pointer(utf16Ptr(it.Label))))
+	}
+	var p point
+	puGetCursorPos.Call(uintptr(unsafe.Pointer(&p)))
+	puSetForeground.Call(w.hwnd)
+	cmd, _, _ := puTrackPopupMenu.Call(menu, 0x0100|0x0002, uintptr(p.X), uintptr(p.Y), 0, w.hwnd, 0) // TPM_RETURNCMD | TPM_RIGHTBUTTON
+	if cmd > 0 && int(cmd) <= len(items) {
+		if it := items[cmd-1]; it.Do != nil && !it.Disabled && !it.Sep {
+			it.Do()
+		}
+	}
+}
+
+// link: Ziel eines Links ("link:N") aus der zuletzt gezeichneten Szene.
+func (w *uiWin) link(id string) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := 0
+	for _, c := range strings.TrimPrefix(id, "link:") {
+		n = n*10 + int(c-'0')
+	}
+	if w.scene == nil || n < 0 || n >= len(w.scene.Links) {
+		return ""
+	}
+	return w.scene.Links[n]
+}
+
+// inputText: Inhalt des Eingabefelds (für Kopieren).
+func (w *uiWin) inputText() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.dlg == nil || w.dlg.Input == nil {
+		return ""
+	}
+	return w.dlg.Input.Value
+}
+
+// insertText fügt Text auf einmal ein (Einfügen aus der Zwischenablage).
+func (w *uiWin) insertText(s string) {
+	w.mu.Lock()
+	in := (*uiInput)(nil)
+	if w.dlg != nil && w.st.Focus == "input" {
+		in = w.dlg.Input
+	}
+	if in == nil {
+		w.mu.Unlock()
+		return
+	}
+	if w.st.SelAll {
+		in.Value, w.st.SelAll = "", false
+	}
+	n := utf8.RuneCountInString(in.Value)
+	var sb strings.Builder
+	for _, c := range strings.ReplaceAll(s, "\r\n", "\n") {
+		if in.MaxLen > 0 && n >= in.MaxLen {
+			break
+		}
+		switch {
+		case c == '\n' && in.Multiline, c >= 32 && c != 127:
+		case c == '\t' || c == '\n':
+			c = ' '
+		default:
+			continue
+		}
+		sb.WriteRune(c)
+		n++
+	}
+	in.Value += sb.String()
+	w.mu.Unlock()
+	w.changed()
+}
+
+// changed: nach jeder Änderung im Eingabefeld (Cursor zeigen, Knöpfe aktualisieren).
+func (w *uiWin) changed() {
+	w.mu.Lock()
+	w.st.CaretOn = true
+	w.mu.Unlock()
+	if w.opts.OnClick != nil {
+		w.opts.OnClick(&uiCtl{w}, "input-changed")
+	}
+	puSetTimer.Call(w.hwnd, timerCaret, 530, 0)
+	w.redraw()
+}
+
+func (w *uiWin) paste() {
+	if w.opts.OnPaste != nil && w.opts.OnPaste(&uiCtl{w}) {
+		return
+	}
+	if s := getClipboardFull(w.hwnd); s != "" {
+		w.insertText(s)
+	}
+}
+
 func (w *uiWin) typeChar(r rune) {
 	w.mu.Lock()
 	in := (*uiInput)(nil)
@@ -472,7 +707,37 @@ func (w *uiWin) typeChar(r rune) {
 		w.mu.Unlock()
 		return
 	}
+	sel := w.st.SelAll
 	switch {
+	case r == 0x01: // Strg+A: alles markieren
+		w.st.SelAll = in.Value != ""
+		w.mu.Unlock()
+		w.redraw()
+		return
+	case r == 0x03: // Strg+C
+		v := in.Value
+		w.mu.Unlock()
+		if sel && v != "" {
+			setClipboard(w.hwnd, strings.ReplaceAll(v, "\n", "\r\n"))
+		}
+		return
+	case r == 0x18: // Strg+X
+		if !sel || in.Value == "" {
+			w.mu.Unlock()
+			return
+		}
+		v := in.Value
+		in.Value, w.st.SelAll = "", false
+		w.mu.Unlock()
+		setClipboard(w.hwnd, strings.ReplaceAll(v, "\n", "\r\n"))
+		w.changed()
+		return
+	case r == 0x16: // Strg+V
+		w.mu.Unlock()
+		w.paste()
+		return
+	case sel && (r == 8 || r == 127 || r == 0x17): // markiert + Rücktaste: alles weg
+		in.Value = ""
 	case r == 8: // Rücktaste
 		if in.Value != "" {
 			_, n := utf8.DecodeLastRuneInString(in.Value)
@@ -485,20 +750,16 @@ func (w *uiWin) typeChar(r rune) {
 		} else {
 			in.Value = ""
 		}
-	case r == 0x16: // Strg+V
-		w.mu.Unlock()
-		for _, c := range getClipboard(w.hwnd) {
-			if c >= 32 && c != 127 {
-				w.typeChar(c)
-			}
+	case (r >= 32 || (r == '\n' && in.Multiline)) && (in.MaxLen == 0 || sel || utf8.RuneCountInString(in.Value) < in.MaxLen):
+		if sel {
+			in.Value = ""
 		}
-		return
-	case (r >= 32 || (r == '\n' && in.Multiline)) && (in.MaxLen == 0 || utf8.RuneCountInString(in.Value) < in.MaxLen):
 		in.Value += string(r)
 	default:
 		w.mu.Unlock()
 		return
 	}
+	w.st.SelAll = false
 	w.st.CaretOn = true
 	if w.opts.OnClick != nil { // Steuerung kann Knöpfe (de)aktivieren
 		w.mu.Unlock()
@@ -545,7 +806,7 @@ func uiWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) (ret uintptr) {
 			cur := uintptr(idcArrow)
 			if hv == "input" {
 				cur = idcIBeam
-			} else if hv != "" {
+			} else if hv != "" && hv != "scroll" && !strings.HasPrefix(hv, "msg:") {
 				cur = idcHand
 			}
 			h, _, _ := procLoadCursorW.Call(0, cur)
@@ -559,12 +820,36 @@ func uiWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) (ret uintptr) {
 			w.tracking = true
 		}
 		x, y := w.local(lParam, false)
+		w.mu.Lock()
+		dragging, ratio := w.st.Press == "scroll", 0.0
+		if w.scene != nil {
+			ratio = w.scene.ScrollRatio
+		}
+		w.mu.Unlock()
+		if dragging { // Scrollleiste ziehen
+			w.scrollTo(w.dragS + (y-w.dragY)*ratio)
+			return 0
+		}
 		id := w.hit(x, y)
 		w.mu.Lock()
 		changed := w.st.Hover != id
 		w.mu.Unlock()
 		if changed {
 			w.setState(func(st *uiState) { st.Hover = id })
+		}
+		return 0
+	case wmMouseWheel:
+		delta := float64(int16(wParam >> 16))
+		w.scrollBy(-delta / 120 * 66)
+		return 0
+	case wmRButtonUp:
+		x, y := w.local(lParam, false)
+		w.contextMenu(w.hit(x, y))
+		return 0
+	case wmDropFiles:
+		paths := dropPaths(wParam)
+		if w.opts.OnDrop != nil && len(paths) > 0 {
+			w.opts.OnDrop(&uiCtl{w}, paths)
 		}
 		return 0
 	case wmMouseLeave:
@@ -579,6 +864,11 @@ func uiWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) (ret uintptr) {
 		x, y := w.local(lParam, false)
 		if id := w.hit(x, y); id != "" {
 			puSetCapture.Call(hwnd)
+			if id == "scroll" {
+				w.mu.Lock()
+				w.dragY, w.dragS = y, w.st.Scroll
+				w.mu.Unlock()
+			}
 			w.setState(func(st *uiState) {
 				st.Press = id
 				if id != "input" && st.Focus == "input" {
@@ -624,6 +914,17 @@ func uiWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) (ret uintptr) {
 			if !w.opts.Bar {
 				w.activate("close")
 			}
+		case 0x21, 0x22: // Bild auf / Bild ab: im Chat blättern
+			w.mu.Lock()
+			page := 0.0
+			if w.scene != nil {
+				page = w.scene.ViewH * 0.85
+			}
+			w.mu.Unlock()
+			if wParam == 0x21 {
+				page = -page
+			}
+			w.scrollBy(page)
 		}
 		return 0
 	case wmChar:
@@ -804,6 +1105,10 @@ func runUILocked(d *uiDialog, o uiOpts) (res string, err error) {
 	}
 	if o.Countdown > 0 {
 		puSetTimer.Call(hwnd, timerCount, 1000, 0)
+	}
+	if o.OnDrop != nil {
+		allowDrop(hwnd)
+		puDragAcceptFiles.Call(hwnd, 1)
 	}
 	if d != nil && d.Input != nil {
 		puSetTimer.Call(hwnd, timerCaret, 530, 0)

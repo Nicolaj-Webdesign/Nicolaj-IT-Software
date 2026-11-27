@@ -20,6 +20,8 @@ Eigene Fernwartungs-Software (RMM) für Nicolaj Webdesign – wie NinjaOne, Intu
 - **Gruppen** (z. B. Familie, Kunden), **Übersicht** (online, offline, braucht Aufmerksamkeit, Agent veraltet), **Mehrfachauswahl**: Nachricht, Software, Skript, Neustart an viele PCs auf einmal
 - **Schnellsuche** mit `Strg + K` und **gespeicherte Skripte** (einmal schreiben, überall ausführen)
 - **Nachrichten**: Am PC über das **n-Symbol unten rechts** oder Startmenü › **„Nachricht an Nicolaj“** schreiben. Du antwortest im Dashboard unter **Nachrichten**, am PC geht das Fenster mit deiner Antwort von selbst auf. Mit „gelesen“-Anzeige auf beiden Seiten.
+  - **Bilder** in beide Richtungen: am PC per Strg+V (Screenshot), Büroklammer oder Hineinziehen; im Dashboard per Büroklammer, Einfügen oder Hineinziehen. Große Fotos werden vorher verkleinert, Metadaten (z. B. GPS) entfernt. Klick aufs Bild öffnet es groß.
+  - **Links** sind anklickbar, der ganze Verlauf lässt sich scrollen (Mausrad, Scrollleiste, Bild auf/ab). Rechtsklick: Text kopieren, Bild öffnen/kopieren/speichern, Link öffnen/kopieren; im Eingabefeld Strg+A/C/X/V.
 - **Dashboard als App** für PC und Handy: eigenes Fenster, Symbol in Taskleiste/Startmenü bzw. auf dem Home-Bildschirm, Zähler auf dem Symbol
 - **Push-Benachrichtigungen** bei neuen Nachrichten, Zugangsanfragen und Sicherheitsalarmen – kommen auch an, wenn App und Browser zu sind
 - **Warnung bei fast vollem Speicher** (unter 10 % oder 5 GB frei) – zählt zu „Brauchen Aufmerksamkeit“
