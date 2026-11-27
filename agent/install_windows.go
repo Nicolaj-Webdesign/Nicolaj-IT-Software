@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf16"
+	"unsafe"
 )
 
 const (
@@ -45,6 +46,9 @@ func runDefault() {
 	goOn := fs.Bool("go", false, "")
 	person := fs.String("name", "", "")
 	fs.Parse(os.Args[1:])
+	if code := codeFromFilename(exe); code != "" && p.Code == "" { // Einrichtungscode steckt im Dateinamen
+		p.Code, p.Request = code, false
+	}
 	if p.Request {
 		requestInstallUI(exe, base, p.Server, p.Fingerprint, *person, *goOn)
 		return
@@ -305,25 +309,22 @@ func runUninstall(args []string) {
 	if cfg, err := loadConfig(agentConfigPath()); err == nil {
 		newClient(cfg).postJSON("/api/agent/goodbye", map[string]any{}, nil)
 	}
-	if _, err := os.Stat(pauseFile()); err == nil { // nie mit pausiertem Virenschutz zurücklassen
-		runPS(context.Background(), psSecurity+psSecurityScripts["security.resume"], nil, true)
+	legacyPause := false
+	if _, err := os.Stat(pauseFile()); err == nil { // alte Version hat pausiert: deren Aufgabe schaltet den Schutz wieder ein
+		legacyPause = true
 	}
 	stopAll()
 	quiet(sys32("schtasks.exe"), "/Delete", "/TN", taskAgent, "/F")
 	quiet(sys32("schtasks.exe"), "/Delete", "/TN", taskScreen, "/F")
-	quiet(sys32("schtasks.exe"), "/Delete", "/TN", taskResume, "/F")
+	if !legacyPause {
+		quiet(sys32("schtasks.exe"), "/Delete", "/TN", taskResume, "/F")
+	}
 	quiet(sys32("reg.exe"), "delete", uninstKey, "/f")
 	os.Remove(shortcutPath())
 	os.Remove(chatShortcutPath())
 	os.RemoveAll(dataDir())
 
-	// Programmordner löschen, sobald dieses Programm beendet ist.
-	cmd := exec.Command(sys32("cmd.exe"))
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true, CreationFlags: 0x08000000 | 0x00000200,
-		CmdLine: fmt.Sprintf(`cmd.exe /c ping 127.0.0.1 -n 4 >nul & rmdir /s /q "%s"`, programDir()),
-	}
-	cmd.Start()
+	removeProgramDir(exe)
 	if !silent {
 		if _, err := runUI(dlgUninstallDone(), uiOpts{}); err != nil {
 			msgBox("Nicolaj Fernwartung wurde entfernt.", mbIconInfo)
@@ -529,4 +530,37 @@ func screenTaskXML(exe string) string {
   ` + fmt.Sprintf(taskSettings, "Parallel") + `
   <Actions Context="Author"><Exec><Command>"` + xmlEscape(exe) + `"</Command><Arguments>screen</Arguments></Exec></Actions>
 </Task>`
+}
+
+var procMoveFileExW = kernel32.NewProc("MoveFileExW")
+
+// removeProgramDir löscht den Programmordner wie ein normales Deinstallationsprogramm: Was gerade
+// läuft (diese .exe), wird in den Temp-Ordner verschoben und beim nächsten Neustart von Windows
+// gelöscht (MOVEFILE_DELAY_UNTIL_REBOOT), alles andere sofort.
+func removeProgramDir(self string) {
+	dir := programDir()
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		os.RemoveAll(filepath.Join(dir, e.Name()))
+	}
+	if os.Remove(dir) == nil {
+		return
+	}
+	const delayUntilReboot, replaceExisting = 0x4, 0x1
+	later := func(p string) { procMoveFileExW.Call(uintptr(unsafe.Pointer(utf16Ptr(p))), 0, delayUntilReboot) }
+	if self != "" && strings.EqualFold(filepath.Dir(self), dir) {
+		tmp := filepath.Join(os.TempDir(), fmt.Sprintf("nicolaj-agent-alt-%d.exe", time.Now().UnixNano()))
+		if r, _, _ := procMoveFileExW.Call(uintptr(unsafe.Pointer(utf16Ptr(self))), uintptr(unsafe.Pointer(utf16Ptr(tmp))), replaceExisting); r != 0 {
+			later(tmp)
+		} else {
+			later(self)
+		}
+	}
+	if os.Remove(dir) != nil {
+		entries, _ = os.ReadDir(dir)
+		for _, e := range entries {
+			later(filepath.Join(dir, e.Name()))
+		}
+		later(dir)
+	}
 }

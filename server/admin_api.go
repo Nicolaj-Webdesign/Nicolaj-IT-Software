@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -519,26 +517,15 @@ func (a *App) apiInstaller(w http.ResponseWriter, r *http.Request, user string) 
 		writeErr(w, 400, "Ungültige Serveradresse.")
 		return
 	}
-	var bin []byte
-	if pkg := a.currentAgent(); pkg != nil {
-		bin = pkg.data
-	}
+	bin := a.installerFor(u.Scheme + "://" + u.Host)
 	if bin == nil {
 		writeErr(w, 404, "Im Server ist noch kein Agent enthalten. Bitte mit build.sh bzw. build.ps1 bauen.")
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{
-		"server": u.Scheme + "://" + u.Host, "code": ec.Code, "fingerprint": a.fingerprint, "label": ec.Label,
-	})
-	var buf bytes.Buffer
-	buf.Grow(len(bin) + len(payload) + 12)
-	buf.Write(bin)
-	buf.Write(payload)
-	binary.Write(&buf, binary.LittleEndian, uint32(len(payload)))
-	buf.WriteString("NRMMCFG1")
 	w.Header().Set("Content-Type", "application/vnd.microsoft.portable-executable")
-	w.Header().Set("Content-Disposition", `attachment; filename="Nicolaj-Fernwartung-Setup.exe"`)
-	w.Write(buf.Bytes())
+	w.Header().Set("Content-Disposition", `attachment; filename="Nicolaj-Fernwartung-`+ec.Code+`.exe"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(bin)
 	a.audit(r, user, "", "Installer heruntergeladen", "Code "+ec.Code)
 }
 

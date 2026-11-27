@@ -100,42 +100,17 @@ Write-NrmmData (Get-NrmmSecurity)
 	"security.harden": `
 $ok = New-Object System.Collections.ArrayList; $bad = New-Object System.Collections.ArrayList
 function Set-Nrmm($label, [scriptblock]$sb) { try { & $sb; [void]$ok.Add($label) } catch { [void]$bad.Add("$label – $($_.Exception.Message)") } }
-$cur = Get-MpPreference
-if ($cur.DisableRealtimeMonitoring) { Set-Nrmm 'Echtzeitschutz eingeschaltet' { Set-MpPreference -DisableRealtimeMonitoring $false } }
-if ($env:NRMM_PUA -eq '1') { Set-Nrmm 'Schutz vor unerwünschten Programmen (PUA): an' { Set-MpPreference -PUAProtection Enabled } } else { Set-Nrmm 'Schutz vor unerwünschten Programmen (PUA): aus' { Set-MpPreference -PUAProtection Disabled } }
-if ($env:NRMM_CLOUD -eq '1') { Set-Nrmm 'Cloud-Schutz: an' { Set-MpPreference -MAPSReporting Advanced -SubmitSamplesConsent SendSafeSamples } } else { Set-Nrmm 'Cloud-Schutz: aus' { Set-MpPreference -MAPSReporting Disabled } }
-if ($env:NRMM_NETWORK -eq '1') { Set-Nrmm 'Netzwerkschutz (gefährliche Webseiten): an' { Set-MpPreference -EnableNetworkProtection Enabled } } else { Set-Nrmm 'Netzwerkschutz: aus' { Set-MpPreference -EnableNetworkProtection Disabled } }
-if ($env:NRMM_RANSOMWARE -eq '1') { Set-Nrmm 'Ransomware-Schutz (überwachter Ordnerzugriff): an' { Set-MpPreference -EnableControlledFolderAccess Enabled } } else { Set-Nrmm 'Ransomware-Schutz: aus' { Set-MpPreference -EnableControlledFolderAccess Disabled } }
+if (-not (Get-MpComputerStatus).RealTimeProtectionEnabled) { [void]$bad.Add('Echtzeitschutz ist aus – bitte am PC unter Windows-Sicherheit einschalten (geht aus Sicherheitsgründen nur dort).') }
+if ($env:NRMM_PUA -eq '1') { Set-Nrmm 'Schutz vor unerwünschten Programmen (PUA): an' { Set-MpPreference -PUAProtection Enabled } }
+if ($env:NRMM_CLOUD -eq '1') { Set-Nrmm 'Cloud-Schutz: an' { Set-MpPreference -MAPSReporting Advanced -SubmitSamplesConsent SendSafeSamples } }
+if ($env:NRMM_NETWORK -eq '1') { Set-Nrmm 'Netzwerkschutz (gefährliche Webseiten): an' { Set-MpPreference -EnableNetworkProtection Enabled } }
+if ($env:NRMM_RANSOMWARE -eq '1') { Set-Nrmm 'Ransomware-Schutz (überwachter Ordnerzugriff): an' { Set-MpPreference -EnableControlledFolderAccess Enabled } }
 $ok | ForEach-Object { "✓ $_" }
 $bad | ForEach-Object { "✗ $_" }
 if ($bad.Count -gt 0) { 'Hinweis: Ist der Manipulationsschutz aktiv oder ein anderer Virenscanner installiert, lassen sich manche Einstellungen nur direkt am PC ändern.' }
+if ($ok.Count -eq 0 -and $bad.Count -eq 0) { 'Nichts zu tun – ausgewählte Schutzfunktionen sind schon an. Ausschalten geht nur am PC.' }
 Write-NrmmData (Get-NrmmSecurity)
-if ($ok.Count -eq 0) { exit 1 }
-`,
-	"security.pause": `
-$min = [int]$env:NRMM_MINUTES
-if (-not (Get-MpComputerStatus).RealTimeProtectionEnabled) {
-  "Der Echtzeitschutz war bereits aus. Er wird in $min Minuten automatisch eingeschaltet."
-} else {
-  try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop } catch {}
-  Start-Sleep -Seconds 2
-  if ((Get-MpComputerStatus).RealTimeProtectionEnabled) {
-    $tp = (Get-MpComputerStatus).IsTamperProtected
-    if ($tp) {
-      throw 'Windows hat das Ausschalten blockiert, weil der Manipulationsschutz aktiv ist – das ist ein Schutz gegen Schädlinge und lässt sich aus der Ferne absichtlich nicht umgehen. So geht es trotzdem: Bildschirm verbinden, dann im Menü „Windows-Sicherheit am PC öffnen“ und dort Manipulationsschutz und Echtzeitschutz kurz ausschalten. Windows schaltet den Echtzeitschutz nach einiger Zeit von selbst wieder ein; den Manipulationsschutz danach bitte wieder einschalten.'
-    }
-    throw 'Der Echtzeitschutz ließ sich nicht ausschalten (evtl. durch eine Richtlinie oder einen anderen Virenscanner gesteuert).'
-  }
-  "Echtzeitschutz für $min Minuten pausiert. Danach schaltet er sich automatisch wieder ein."
-}
-Write-NrmmData (Get-NrmmSecurity)
-`,
-	"security.resume": `
-try { Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop } catch {}
-Start-Sleep -Seconds 2
-if (-not (Get-MpComputerStatus).RealTimeProtectionEnabled) { throw 'Der Echtzeitschutz ist noch aus. Bitte am PC unter Windows-Sicherheit prüfen.' }
-'Der Echtzeitschutz ist wieder an.'
-Write-NrmmData (Get-NrmmSecurity)
+if ($ok.Count -eq 0 -and $bad.Count -gt 0) { exit 1 }
 `,
 	"security.offlineScan": `
 Start-MpWDOScan
@@ -152,7 +127,6 @@ func execSecurity(ctx context.Context, cmd Cmd, a map[string]any) Result {
 		return Result{OK: false, Output: "Unbekannte Aktion: " + cmd.Type}
 	}
 	env := map[string]string{
-		"NRMM_MINUTES":  fmt.Sprint(argInt(a, "minutes")),
 		"NRMM_SCANTYPE": argString(a, "type"),
 		"NRMM_PUA":      boolEnv(argBool(a, "pua")), "NRMM_CLOUD": boolEnv(argBool(a, "cloud")),
 		"NRMM_NETWORK": boolEnv(argBool(a, "network")), "NRMM_RANSOMWARE": boolEnv(argBool(a, "ransomware")),
@@ -164,75 +138,15 @@ func execSecurity(ctx context.Context, cmd Cmd, a map[string]any) Result {
 		}
 		return Result{OK: false, Output: cleanPSError(out), Data: data}
 	}
-	switch cmd.Type {
-	case "security.pause":
-		until := time.Now().Add(time.Duration(max(argInt(a, "minutes"), 5)) * time.Minute)
-		if err := armPause(until); err != nil {
-			// Ohne sichere Rückkehr kein Pausieren: sofort wieder einschalten.
-			runPS(context.Background(), psSecurity+psSecurityScripts["security.resume"], nil, true)
-			return Result{OK: false, Output: "Automatisches Wiedereinschalten konnte nicht eingerichtet werden – Schutz bleibt an. (" + err.Error() + ")"}
-		}
-		out += "\nWieder an um " + until.Format("15:04") + " Uhr."
-	case "security.resume":
-		disarmPause()
-	}
 	return Result{OK: true, Output: out, Data: data}
 }
 
-// ---------- Schutz-Pause mit doppelter Absicherung ----------
-// 1. Der Agent prüft alle 20 Sekunden die Datei pause.json.
-// 2. Eine geplante Aufgabe schaltet den Schutz zur Endzeit ein – auch wenn der Agent nicht läuft.
-
+// Ältere Versionen konnten den Echtzeitschutz für Reparaturen pausieren. Diese Funktion gibt es
+// nicht mehr: Ein Programm, das den Virenschutz abschalten kann, wird zu Recht misstrauisch beäugt.
+// Eine noch laufende alte Pause beendet die damals angelegte Aufgabe selbst.
 const taskResume = `NicolajRMM\Schutz-wieder-an`
 
 func pauseFile() string { return filepath.Join(dataDir(), "pause.json") }
-
-func armPause(until time.Time) error {
-	if err := os.WriteFile(pauseFile(), []byte(until.UTC().Format(time.RFC3339)), 0o600); err != nil {
-		return err
-	}
-	return createTask(taskResume, resumeTaskXML(until))
-}
-
-func disarmPause() {
-	os.Remove(pauseFile())
-	quiet(sys32("schtasks.exe"), "/Delete", "/TN", taskResume, "/F")
-}
-
-func resumeTaskXML(until time.Time) string {
-	ps := sys32(`WindowsPowerShell\v1.0\powershell.exe`)
-	return `<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Author>Nicolaj Webdesign</Author><Description>Nicolaj Fernwartung – schaltet den Echtzeitschutz nach einer Pause wieder ein</Description></RegistrationInfo>
-  <Triggers><TimeTrigger><StartBoundary>` + until.Format("2006-01-02T15:04:05") + `</StartBoundary><Enabled>true</Enabled></TimeTrigger><BootTrigger><Enabled>true</Enabled><Delay>PT2M</Delay></BootTrigger></Triggers>
-  <Principals><Principal id="Author"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
-  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT10M</ExecutionTimeLimit><Enabled>true</Enabled><Hidden>false</Hidden></Settings>
-  <Actions Context="Author"><Exec><Command>"` + xmlEscape(ps) + `"</Command><Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "if (-not (Test-Path '` + xmlEscape(pauseFile()) + `') -or ((Get-Date) -ge [datetime]::Parse((Get-Content '` + xmlEscape(pauseFile()) + `')))) { Set-MpPreference -DisableRealtimeMonitoring $false; Remove-Item '` + xmlEscape(pauseFile()) + `' -ErrorAction SilentlyContinue }"</Arguments></Exec></Actions>
-</Task>`
-}
-
-// pauseWatcher schaltet den Schutz wieder ein, sobald die Pause abgelaufen ist (auch nach einem Neustart).
-func pauseWatcher(c *Client) {
-	for {
-		if b, err := os.ReadFile(pauseFile()); err == nil {
-			until, perr := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
-			if perr != nil || time.Now().After(until) {
-				logf("Schutz-Pause abgelaufen – schalte Echtzeitschutz wieder ein")
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				_, _, err := runPS(ctx, psSecurity+psSecurityScripts["security.resume"], nil, true)
-				cancel()
-				if err != nil {
-					logf("Wiedereinschalten fehlgeschlagen: %v", err)
-				}
-				disarmPause()
-				if inv := collectInventory(); len(inv) > 0 {
-					c.postRaw("/api/agent/inventory", inv)
-				}
-			}
-		}
-		time.Sleep(20 * time.Second)
-	}
-}
 
 func openSecuritySettings() error {
 	return exec.Command(filepath.Join(os.Getenv("SystemRoot"), "explorer.exe"), "windowsdefender://threatsettings").Start()

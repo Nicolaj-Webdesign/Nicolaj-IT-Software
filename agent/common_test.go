@@ -105,3 +105,19 @@ func TestKeyMapComplete(t *testing.T) {
 		}
 	}
 }
+
+func TestCodeFromFilename(t *testing.T) {
+	cases := map[string]string{
+		"/tmp/Nicolaj-Fernwartung-K7QM-3XPA.exe":     "K7QM-3XPA",
+		"/tmp/Nicolaj-Fernwartung-K7QM-3XPA (1).exe": "K7QM-3XPA",
+		"/tmp/Nicolaj-Fernwartung-K7QM-3XPA(2).exe":  "K7QM-3XPA",
+		"/tmp/Nicolaj-Fernwartung.exe":               "",
+		"/tmp/nicolaj-agent.exe":                     "",
+		"/tmp/Nicolaj-Fernwartung-k7qm-3xpa.exe":     "",
+	}
+	for in, want := range cases {
+		if got := codeFromFilename(in); got != want {
+			t.Errorf("%s → %q, erwartet %q", in, got, want)
+		}
+	}
+}

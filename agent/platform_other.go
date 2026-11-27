@@ -108,21 +108,6 @@ var simSec = struct {
 	pausedUntil                     time.Time
 }{pua: 0, cloud: 2, network: 0, ransomware: 0, active: true, realtime: true, quickAge: 9}
 
-func pauseWatcher(c *Client) {
-	for range time.Tick(3 * time.Second) {
-		simMu.Lock()
-		expired := !simSec.pausedUntil.IsZero() && time.Now().After(simSec.pausedUntil)
-		if expired {
-			simSec.realtime, simSec.pausedUntil = true, time.Time{}
-		}
-		simMu.Unlock()
-		if expired {
-			logf("(Simulation) Schutz-Pause abgelaufen – Echtzeitschutz wieder an")
-			c.postRaw("/api/agent/inventory", collectInventory())
-		}
-	}
-}
-
 func openSecuritySettings() error { logf("(Simulation) Windows-Sicherheit geöffnet"); return nil }
 
 func runInfo() { fmt.Println(infoText()) }

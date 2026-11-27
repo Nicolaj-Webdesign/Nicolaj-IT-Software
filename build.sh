@@ -19,7 +19,7 @@ agent() {
   echo "→ Agent $VERSION (Windows) …"
   go run ./tools/winres -version "$VERSION" -o agent/rsrc_windows_amd64.syso # Symbol + Dateiinfos
   GOOS=windows GOARCH=amd64 go build -trimpath \
-    -ldflags "-s -w -H windowsgui -X main.agentVersion=$VERSION -X main.buildMarker=NRMM-AGENT-VERSION:$VERSION:END -X main.defaultServer=${DEFAULT_SERVER:-}" \
+    -ldflags "-H windowsgui -X main.agentVersion=$VERSION -X main.buildMarker=NRMM-AGENT-VERSION:$VERSION:END -X main.defaultServer=${DEFAULT_SERVER:-}" \
     -o dist/nicolaj-agent.exe ./agent
 }
 

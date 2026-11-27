@@ -1143,7 +1143,7 @@ async function addDeviceModal() {
         <select class="input" id="srv">${opts.map((o) => `<option>${esc(o)}</option>`).join('')}</select>
         <span class="hint">${isLocal ? 'Achtung: „localhost“ funktioniert nur auf dem Server selbst – wähle die Netzwerk-Adresse.' : 'Im Heimnetz die 192.168.…-Adresse des Servers.'}</span></label>
       ${S.info && !S.info.agentAvailable ? `<div class="callout warn">${icon('alert')}<div>In diesem Server ist noch kein Agent eingebaut. Baue ihn mit <code>build.sh</code> bzw. <code>build.ps1</code>.</div></div>` : ''}
-      <ol class="steps"><li>Installer herunterladen und auf den PC bringen (USB-Stick, E-Mail, Cloud).</li>
+      <ol class="steps"><li>Installer herunterladen und auf den PC bringen (USB-Stick, E-Mail, Cloud). <span class="faint">Dateinamen nicht ändern – darin steckt der Code. Sonst fragt der Installer nach einem Namen und du gibst den PC danach hier frei.</span></li>
         <li>Doppelklick → Windows fragt nach Administratorrechten → <b>Ja</b>.</li>
         <li>Installation bestätigen. Der PC taucht hier automatisch auf.</li></ol>
       <details><summary class="muted small">Alternative: per Kommandozeile installieren</summary>
@@ -1802,8 +1802,6 @@ class SecurityTab {
     if (a === 'msert-quick') return v.cmd('security.msert', { type: 'quick' });
     if (a === 'msert-full') return confirmModal('Gründliche Zweitmeinung?', 'Der Microsoft Safety Scanner wird frisch von Microsoft geladen (ca. 200 MB), geprüft und durchsucht den ganzen PC. Funde werden automatisch entfernt. Dauer: oft über eine Stunde.', 'Starten').then((ok) => ok && v.cmd('security.msert', { type: 'full' }));
     if (a === 'offline') return confirmModal('Offline-Scan mit Neustart?', 'Der PC startet <b>sofort</b> neu und wird vor dem Windows-Start geprüft (ca. 15 Minuten). Hilft gegen hartnäckige Schädlinge, die sich im laufenden Windows verstecken. Vorher sollte die Person am PC ihre Arbeit speichern.', 'Jetzt neu starten', true).then((ok) => ok && v.cmd('security.offlineScan'));
-    if (a === 'pause') return this.pauseModal();
-    if (a === 'resume') return v.cmd('security.resume');
     if (a === 'opensec') return v.cmd('user.openSecurity');
     if (a === 'harden') return this.hardenModal(false);
     if (a === 'harden-rec') return this.hardenModal(true);
@@ -1813,16 +1811,6 @@ class SecurityTab {
       v.dev.securityEnabled = false; this.render(this.el);
     });
   }
-  pauseModal() {
-    openModal({
-      title: 'Echtzeitschutz pausieren', submitLabel: 'Pausieren', danger: true,
-      body: `<p>Für Reparaturen, bei denen der Virenschutz stört (z. B. ein Tool, das fälschlich blockiert wird). Der Schutz schaltet sich <b>automatisch wieder ein</b> – auch wenn du es vergisst oder der PC neu startet.</p>
-        <label class="field">Wie lange?<select class="input" name="minutes"><option value="15">15 Minuten</option><option value="30" selected>30 Minuten</option><option value="60">1 Stunde</option><option value="120">2 Stunden</option></select></label>
-        <div class="callout warn">${icon('alert')}<div>Während der Pause werden neue Dateien nicht geprüft. Die Person am PC sollte in der Zeit nichts herunterladen oder öffnen.</div></div>
-        <p class="small faint">Ist am PC der Manipulationsschutz an, blockiert Windows das Pausieren aus der Ferne. Dann: Bildschirm verbinden → „Windows-Sicherheit am PC öffnen“.</p>`,
-      onSubmit: async (f) => { await this.v.cmd('security.pause', { minutes: +f.minutes.value }); },
-    });
-  }
   hardenModal(recommended) {
     const s = this.sec() || {};
     const on = (x, val = 1) => (x === val || (val === 2 && x >= 1)) ? 'checked' : '';
@@ -1830,11 +1818,16 @@ class SecurityTab {
     openModal({
       title: 'Schutz-Einstellungen', submitLabel: 'Anwenden', wide: true,
       body: `<p>${recommended ? 'Die empfohlenen Einstellungen sind vorausgewählt.' : 'Aktueller Stand des PCs.'} Empfohlen ist alles außer Ransomware-Schutz. Wirkt sofort.</p>
-        <label class="check"><input type="checkbox" name="pua" ${fresh || s.pua === 1 ? 'checked' : ''}> <span>Schutz vor unerwünschten Programmen (PUA)<small>Blockt Adware, Toolbars, „Gratis-PDF-Konverter“ und ähnlichen Müll – genau das, wofür viele Malwarebytes nutzen.</small></span></label>
-        <label class="check"><input type="checkbox" name="cloud" ${fresh || on(s.cloud, 2) ? 'checked' : ''}> <span>Cloud-Schutz<small>Unbekannte Dateien werden in Sekunden mit Microsofts Cloud abgeglichen. Erkennt neue Schädlinge deutlich schneller.</small></span></label>
-        <label class="check"><input type="checkbox" name="network" ${fresh || s.network === 1 ? 'checked' : ''}> <span>Netzwerkschutz<small>Sperrt bekannte Betrugs-, Phishing- und Schadsoftware-Seiten in allen Browsern.</small></span></label>
-        <label class="check"><input type="checkbox" name="ransomware" ${s.ransomware === 1 ? 'checked' : ''}> <span>Ransomware-Schutz (überwachter Ordnerzugriff)<small>Nur vertrauenswürdige Programme dürfen in Dokumente, Bilder usw. schreiben. Sehr wirksam, kann aber ältere Programme beim Speichern blockieren – erst beobachten.</small></span></label>`,
-      onSubmit: async (f) => { await this.v.cmd('security.harden', { pua: f.pua.checked, cloud: f.cloud.checked, network: f.network.checked, ransomware: f.ransomware.checked }); },
+        <p class="small faint">Aus der Ferne lässt sich Schutz nur <b>einschalten</b>. Ausschalten geht absichtlich nur direkt am PC (Windows-Sicherheit) – so kann auch niemand, der sich Zugang zum Dashboard verschafft, den Virenschutz abschalten.</p>
+        <label class="check"><input type="checkbox" name="pua" ${fresh || s.pua === 1 ? 'checked' : ''} ${s.pua === 1 ? 'disabled' : ''}> <span>Schutz vor unerwünschten Programmen (PUA)${s.pua === 1 ? ' – ist an' : ''}<small>Blockt Adware, Toolbars, „Gratis-PDF-Konverter“ und ähnlichen Müll – genau das, wofür viele Malwarebytes nutzen.</small></span></label>
+        <label class="check"><input type="checkbox" name="cloud" ${fresh || on(s.cloud, 2) ? 'checked' : ''} ${on(s.cloud, 2) ? 'disabled' : ''}> <span>Cloud-Schutz${on(s.cloud, 2) ? ' – ist an' : ''}<small>Unbekannte Dateien werden in Sekunden mit Microsofts Cloud abgeglichen. Erkennt neue Schädlinge deutlich schneller.</small></span></label>
+        <label class="check"><input type="checkbox" name="network" ${fresh || s.network === 1 ? 'checked' : ''} ${s.network === 1 ? 'disabled' : ''}> <span>Netzwerkschutz${s.network === 1 ? ' – ist an' : ''}<small>Sperrt bekannte Betrugs-, Phishing- und Schadsoftware-Seiten in allen Browsern.</small></span></label>
+        <label class="check"><input type="checkbox" name="ransomware" ${s.ransomware === 1 ? 'checked disabled' : ''}> <span>Ransomware-Schutz (überwachter Ordnerzugriff)${s.ransomware === 1 ? ' – ist an' : ''}<small>Nur vertrauenswürdige Programme dürfen in Dokumente, Bilder usw. schreiben. Sehr wirksam, kann aber ältere Programme beim Speichern blockieren – erst beobachten.</small></span></label>`,
+      onSubmit: async (f) => {
+        const want = (el) => el.checked && !el.disabled;
+        if (![f.pua, f.cloud, f.network, f.ransomware].some(want)) throw new Error('Nichts ausgewählt, was noch nicht an ist.');
+        await this.v.cmd('security.harden', { pua: want(f.pua), cloud: want(f.cloud), network: want(f.network), ransomware: want(f.ransomware) });
+      },
     });
   }
   update() {
@@ -1860,8 +1853,7 @@ class SecurityTab {
           <button type="button" data-sa="msert-quick">${icon('eye')} Zweitmeinung (schnell, nur melden)</button>
           <button type="button" data-sa="msert-full">${icon('eye')} Zweitmeinung (gründlich, entfernt Funde)</button>
           <button type="button" data-sa="offline">${icon('power')} Offline-Scan mit Neustart</button>
-          <hr>${pu ? `<button type="button" data-sa="resume">${icon('shield')} Echtzeitschutz wieder einschalten</button>` : `<button type="button" data-sa="pause" ${s?.realtime === false ? 'disabled' : ''}>${icon('clock')} Schutz pausieren (für Reparaturen)</button>`}
-          <button type="button" data-sa="opensec" ${d.screenOnline ? '' : 'disabled title="Niemand angemeldet"'}>${icon('monitor')} Windows-Sicherheit am PC öffnen</button><hr>
+          <hr><button type="button" data-sa="opensec" ${d.screenOnline ? '' : 'disabled title="Niemand angemeldet"'}>${icon('monitor')} Windows-Sicherheit am PC öffnen</button><hr>
           <button type="button" data-sa="harden">${icon('sliders')} Schutz-Einstellungen</button>
           <button type="button" data-sa="refresh">${icon('refresh')} Status neu laden</button>
           <hr><button type="button" class="danger" data-sa="off">${icon('x')} Paket deaktivieren</button></div></details>

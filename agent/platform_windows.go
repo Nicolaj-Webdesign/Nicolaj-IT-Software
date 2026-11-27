@@ -283,7 +283,7 @@ func runPS(ctx context.Context, script string, env map[string]string, prelude bo
 	f.Close()
 
 	ps := sys32(`WindowsPowerShell\v1.0\powershell.exe`)
-	cmd := exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path)
+	cmd := exec.CommandContext(ctx, ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", path)
 	cmd.SysProcAttr = hidden()
 	cmd.Env = append(os.Environ(), "NRMM_VERSION="+agentVersion)
 	for k, v := range env {

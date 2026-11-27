@@ -27,6 +27,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -127,6 +128,18 @@ type Payload struct {
 	Fingerprint string `json:"fingerprint"`
 	Label       string `json:"label"`
 	Request     bool   `json:"request"` // allgemeiner Installer: Name eingeben, Zugang anfragen
+}
+
+var reFileCode = regexp.MustCompile(`(?:^|[^A-Za-z0-9])([A-Z0-9]{4}-[A-Z0-9]{4})(?:[^A-Za-z0-9]|$)`)
+
+// codeFromFilename: Einrichtungscode aus dem Dateinamen („Nicolaj-Fernwartung-ABCD-EFGH (1).exe“).
+func codeFromFilename(exe string) string {
+	name := filepath.Base(exe)
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	if m := reFileCode.FindStringSubmatch(name); m != nil {
+		return m[1]
+	}
+	return ""
 }
 
 // readPayload liest die angehängten Daten und gibt die Größe der eigentlichen .exe zurück.
@@ -551,7 +564,6 @@ func runService() {
 	go worker(other)
 	go worker(other)
 
-	go pauseWatcher(c)
 	go cleanupAfterUpdate()
 
 	runLoop(c, "Dienst", func(ev string, data []byte) {

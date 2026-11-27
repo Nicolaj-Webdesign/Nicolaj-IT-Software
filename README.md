@@ -105,14 +105,14 @@ Pro PC unter **Gerät › Sicherheit** (oder Einstellungen) einschalten. Übersi
 | Alarm | Sofort-Meldung im Dashboard + Protokoll, wenn eine neue Bedrohung auftaucht oder der Echtzeitschutz ausgeht |
 | Scans | Schnellscan, vollständiger Scan, **Offline-Scan** (Neustart, prüft vor dem Windows-Start – gegen hartnäckige Schädlinge) |
 | Bereinigen | Aktive Bedrohungen entfernen, Fundliste mit Datei, Gefahrenstufe und Status |
-| Härtung | **Schutz vor unerwünschten Programmen** (Adware, Toolbars – die Stärke von Malwarebytes), Cloud-Schutz, Netzwerkschutz gegen Phishing-Seiten, optional Ransomware-Schutz |
+| Härtung | **Schutz vor unerwünschten Programmen** (Adware, Toolbars – die Stärke von Malwarebytes), Cloud-Schutz, Netzwerkschutz gegen Phishing-Seiten, optional Ransomware-Schutz. Aus der Ferne nur **einschalten** – ausschalten geht absichtlich nur am PC |
 | Zweitmeinung | **Microsoft Safety Scanner** wird jedes Mal frisch von Microsoft geladen, die Signatur geprüft, dann „schnell, nur melden“ oder „gründlich, Funde entfernen“ |
 | Für alle | „Alle: Signaturen“ und „Alle: Schnellscan“ mit einem Klick |
-| **Schutz pausieren** | Für Reparaturen 15 Min. bis 2 Std. Echtzeitschutz aus. Geht **garantiert automatisch wieder an** (Agent-Wächter + geplante Windows-Aufgabe, auch nach Neustart oder Deinstallation). Keine Fehlalarme während der Pause, aber Alarm, falls der Schutz danach nicht wieder angeht. |
 
 Hinweise:
 - Ist ein anderer Virenscanner (z. B. Avast) installiert, läuft der Defender im Hintergrund („passiv“). Das Paket zeigt das an; manche Einstellungen greifen dann nicht.
-- Bei aktivem **Manipulationsschutz** (in Windows 11 Standard) lassen sich einige Einstellungen – auch das Pausieren – nur direkt am PC ändern. Das ist Absicht: Sonst könnte jede Schadsoftware den Virenschutz genauso abschalten. Lösung: Bildschirm verbinden → im Sicherheit-Menü „Windows-Sicherheit am PC öffnen“ → dort kurz ausschalten. Den Manipulationsschutz danach wieder einschalten.
+- Der Agent kann den Virenschutz **nicht abschalten** – auch nicht kurz zum Reparieren. Ein Programm, das das kann, stufen Virenscanner zu Recht als gefährlich ein, und wer sich Zugang zum Dashboard verschafft, könnte sonst alle PCs schutzlos machen. Muss der Schutz für eine Reparatur wirklich kurz aus: Bildschirm verbinden → im Sicherheit-Menü „Windows-Sicherheit am PC öffnen“ → dort ausschalten. Windows schaltet den Echtzeitschutz nach einiger Zeit von selbst wieder ein.
+- Bei aktivem **Manipulationsschutz** (in Windows 11 Standard) lassen sich einige Einstellungen nur direkt am PC ändern. Das ist Absicht.
 - Malwarebytes Free ist nicht eingebaut: Laut Lizenz nur für private Geräte, nicht für Geräte, die geschäftlich genutzt werden.
 
 ---
@@ -178,6 +178,15 @@ git push origin v1.0.1
 Die Datei `VERSION` gilt nur für lokale Builds – bei Releases zählt der Tag.
 
 ---
+
+## Warnungen von Windows Defender / SmartScreen vermeiden
+
+Für Virenscanner sieht jede Fernwartung erst einmal aus wie ein Trojaner (startet mit Windows, sieht den Bildschirm, führt Befehle aus). Damit Nicolaj Fernwartung nicht fälschlich blockiert wird:
+
+- **Nichts, was nach Schadsoftware aussieht:** Der Agent kann den Virenschutz nicht abschalten, nutzt PowerShell ohne „Bypass“, löscht sich beim Entfernen wie ein normales Deinstallationsprogramm (Rest beim nächsten Neustart) und wird nicht „gestrippt“ gebaut.
+- **Eine Datei für alle:** Jeder Download des Installers ist Byte für Byte gleich (gleiche Prüfsumme) – so baut die Datei bei Microsoft einen guten Ruf auf. Der Einrichtungscode steckt im Dateinamen (`Nicolaj-Fernwartung-ABCD-EFGH.exe`). Wird die Datei umbenannt, fragt der Installer nach einem Namen und der PC erscheint als Zugangsanfrage.
+- **Fehlalarm melden:** Wird eine neue Version trotzdem erkannt, die Datei unter <https://www.microsoft.com/wdsi/filesubmission> als **Software developer** einreichen („Incorrectly detected as malware“).
+- **Code-Signatur** (auf Dauer am wirksamsten): Mit Signatur hängt der Ruf am Herausgeber statt an jeder einzelnen Datei. Der Release-Workflow kann mit Microsoft Artifact Signing signieren (siehe Kommentare in `.github/workflows/release.yml`).
 
 ## Grenzen (ehrlich)
 

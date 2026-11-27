@@ -177,12 +177,17 @@ func (a *App) apiRequestSettings(w http.ResponseWriter, r *http.Request, user st
 }
 
 // publicInstaller: der allgemeine Installer (Agent + Serveradresse, ohne Code).
-func (a *App) publicInstaller(r *http.Request) []byte {
+func (a *App) publicInstaller(r *http.Request) []byte { return a.installerFor(a.publicBase(r)) }
+
+// installerFor: Installer für diesen Server. Für alle Downloads Byte für Byte gleich (gleiche
+// Prüfsumme), damit Windows/Defender die Datei als bekannt einstufen können. Ein Einrichtungscode
+// steckt deshalb nicht in der Datei, sondern im Dateinamen (Nicolaj-Fernwartung-ABCD-EFGH.exe).
+func (a *App) installerFor(server string) []byte {
 	pkg := a.currentAgent()
 	if pkg == nil || pkg.data == nil {
 		return nil
 	}
-	payload, _ := json.Marshal(map[string]any{"server": a.publicBase(r), "fingerprint": a.fingerprint, "request": true})
+	payload, _ := json.Marshal(map[string]any{"server": server, "fingerprint": a.fingerprint, "request": true})
 	var buf bytes.Buffer
 	buf.Grow(len(pkg.data) + len(payload) + 12)
 	buf.Write(pkg.data)

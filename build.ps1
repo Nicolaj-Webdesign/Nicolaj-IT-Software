@@ -10,7 +10,7 @@ $env:CGO_ENABLED = '0'
 Write-Host "-> Agent $Version (Windows) ..."
 $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
 go run .\tools\winres -version $Version -o agent\rsrc_windows_amd64.syso
-go build -trimpath -ldflags "-s -w -H windowsgui -X main.agentVersion=$Version -X main.buildMarker=NRMM-AGENT-VERSION:${Version}:END -X main.defaultServer=$env:DEFAULT_SERVER" -o dist\nicolaj-agent.exe .\agent
+go build -trimpath -ldflags "-H windowsgui -X main.agentVersion=$Version -X main.buildMarker=NRMM-AGENT-VERSION:${Version}:END -X main.defaultServer=$env:DEFAULT_SERVER" -o dist\nicolaj-agent.exe .\agent
 Copy-Item dist\nicolaj-agent.exe server\assets\nicolaj-agent.exe -Force
 
 Write-Host "-> Server $Version (Windows, Linux) ..."
