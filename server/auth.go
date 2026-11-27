@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +24,7 @@ import (
 const (
 	pbkdf2Iter    = 210000
 	sessionCookie = "nrmm_session"
-	sessionTTL    = 12 * time.Hour
+	sessionTTL    = 120 * 24 * time.Hour // verlängert sich bei jeder Nutzung (höchstens einmal am Tag)
 )
 
 // ---------- Passwörter ----------
@@ -153,34 +154,111 @@ func (l *RateLimiter) Success(key string) {
 
 // ---------- Sitzungen ----------
 
-func (a *App) createSession(w http.ResponseWriter, user string) {
+func (a *App) createSession(w http.ResponseWriter, r *http.Request, user string) {
 	tok := randHex(32)
-	rec := &SessionRec{TokenHash: sha256Hex(tok), Username: user, Created: time.Now(), Expires: time.Now().Add(sessionTTL)}
-	a.store.Update(func(d *DBData) { d.Sessions = append(d.Sessions, rec) })
+	now := time.Now()
+	rec := &SessionRec{TokenHash: sha256Hex(tok), Username: user, Created: now, Expires: now.Add(sessionTTL),
+		LastUsed: now, IP: clientIP(r), Agent: uaLabel(r.UserAgent())}
+	a.store.Update(func(d *DBData) {
+		d.Sessions = append(d.Sessions, rec)
+		// höchstens 30 Sitzungen pro Konto – die ältesten fliegen raus
+		n := 0
+		for i := len(d.Sessions) - 1; i >= 0; i-- {
+			if d.Sessions[i].Username == user {
+				if n++; n > 30 {
+					d.Sessions = append(d.Sessions[:i], d.Sessions[i+1:]...)
+				}
+			}
+		}
+	})
+	a.setSessionCookie(w, tok)
+}
+
+func (a *App) setSessionCookie(w http.ResponseWriter, tok string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: tok, Path: "/", HttpOnly: true, Secure: a.secureCookies(),
-		SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds()),
+		SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds()), Expires: time.Now().Add(sessionTTL),
 	})
 }
 
-func (a *App) sessionUser(r *http.Request) string {
+// session prüft das Sitzungs-Cookie. Wer das Dashboard benutzt, bleibt angemeldet:
+// Ablauf und Cookie werden einmal am Tag wieder auf 120 Tage gesetzt.
+func (a *App) session(w http.ResponseWriter, r *http.Request) (user, sid string) {
 	c, err := r.Cookie(sessionCookie)
-	if err != nil || c.Value == "" {
-		return ""
+	if err != nil || c.Value == "" || len(c.Value) > 128 {
+		return "", ""
 	}
 	h := sha256Hex(c.Value)
-	user := ""
+	now := time.Now()
+	renew, touch := false, false
 	a.store.View(func(d *DBData) {
 		for _, s := range d.Sessions {
-			if subtle.ConstantTimeCompare([]byte(s.TokenHash), []byte(h)) == 1 && time.Now().Before(s.Expires) {
+			if subtle.ConstantTimeCompare([]byte(s.TokenHash), []byte(h)) == 1 && now.Before(s.Expires) {
 				if d.FindAdmin(s.Username) != nil {
-					user = s.Username
+					user, sid = s.Username, s.SID()
+					renew = s.Expires.Sub(now) < sessionTTL-24*time.Hour
+					touch = renew || now.Sub(s.LastUsed) > 10*time.Minute || s.IP != clientIP(r)
 				}
 				return
 			}
 		}
 	})
-	return user
+	if user == "" || !touch {
+		return
+	}
+	ip, agent := clientIP(r), uaLabel(r.UserAgent())
+	a.store.Update(func(d *DBData) {
+		for _, s := range d.Sessions {
+			if s.TokenHash == h {
+				s.LastUsed, s.IP, s.Agent = now, ip, agent
+				if renew {
+					s.Expires = now.Add(sessionTTL)
+				}
+				return
+			}
+		}
+	})
+	if renew && w != nil {
+		a.setSessionCookie(w, c.Value)
+	}
+	return
+}
+
+// uaLabel macht aus dem User-Agent eine kurze Gerätebezeichnung.
+func uaLabel(ua string) string {
+	has := func(s string) bool { return strings.Contains(ua, s) }
+	dev := "Unbekanntes Gerät"
+	switch {
+	case has("iPad"):
+		dev = "iPad"
+	case has("iPhone"):
+		dev = "iPhone"
+	case has("Android"):
+		dev = "Android"
+	case has("Windows"):
+		dev = "Windows"
+	case has("Mac OS X"):
+		dev = "Mac"
+	case has("Linux"):
+		dev = "Linux"
+	}
+	br := ""
+	switch {
+	case has("Edg/"):
+		br = "Edge"
+	case has("OPR/"):
+		br = "Opera"
+	case has("Firefox/"):
+		br = "Firefox"
+	case has("Chrome/") || has("CriOS/"):
+		br = "Chrome"
+	case has("Safari/"):
+		br = "Safari"
+	}
+	if br == "" {
+		return dev
+	}
+	return dev + " · " + br
 }
 
 func (a *App) hasAdmin() bool {
@@ -203,7 +281,7 @@ func (a *App) ensureSetupCode() string {
 // ---------- Handler ----------
 
 func (a *App) apiState(w http.ResponseWriter, r *http.Request) {
-	user := a.sessionUser(r)
+	user, _ := a.session(w, r)
 	resp := map[string]any{"setupNeeded": !a.hasAdmin(), "version": serverVersion, "user": nil}
 	if user != "" {
 		a.store.View(func(d *DBData) {
@@ -262,7 +340,7 @@ func (a *App) apiSetup(w http.ResponseWriter, r *http.Request) {
 	os.Remove(filepath.Join(a.dataDir, "einrichtungscode.txt"))
 	a.setupCode = ""
 	a.audit(r, req.Username, "", "Konto angelegt", "Erstes Administrator-Konto eingerichtet")
-	a.createSession(w, req.Username)
+	a.createSession(w, r, req.Username)
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -318,7 +396,7 @@ func (a *App) apiLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	a.limiter.Success("login:" + ip)
 	a.audit(r, req.Username, "", "Angemeldet", "")
-	a.createSession(w, strings.TrimSpace(req.Username))
+	a.createSession(w, r, strings.TrimSpace(req.Username))
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
@@ -363,13 +441,90 @@ func (a *App) apiChangePassword(w http.ResponseWriter, r *http.Request, user str
 		writeErr(w, 500, "Fehler beim Speichern.")
 		return
 	}
+	_, sid := a.session(nil, r)
+	n := 0
 	a.store.Update(func(d *DBData) {
 		if ad := d.FindAdmin(user); ad != nil {
 			ad.PasswordHash = h
 		}
+		n = dropSessions(d, user, sid)
 	})
-	a.audit(r, user, "", "Passwort geändert", "")
-	writeJSON(w, 200, map[string]any{"ok": true})
+	a.audit(r, user, "", "Passwort geändert", fmt.Sprintf("%d andere Geräte abgemeldet", n))
+	writeJSON(w, 200, map[string]any{"ok": true, "loggedOut": n})
+}
+
+// dropSessions meldet alle Sitzungen des Kontos ab, außer keep (die eigene).
+func dropSessions(d *DBData, user, keep string) int {
+	out, n := d.Sessions[:0], 0
+	for _, s := range d.Sessions {
+		if s.Username == user && s.SID() != keep {
+			n++
+			continue
+		}
+		out = append(out, s)
+	}
+	d.Sessions = out
+	return n
+}
+
+// ---------- Angemeldete Geräte ----------
+
+func (a *App) apiSessions(w http.ResponseWriter, r *http.Request, user string) {
+	_, cur := a.session(nil, r)
+	list := []map[string]any{}
+	a.store.View(func(d *DBData) {
+		for i := len(d.Sessions) - 1; i >= 0; i-- {
+			s := d.Sessions[i]
+			if s.Username != user || time.Now().After(s.Expires) {
+				continue
+			}
+			last := s.LastUsed
+			if last.IsZero() {
+				last = s.Created
+			}
+			list = append(list, map[string]any{"id": s.SID(), "agent": s.Agent, "ip": s.IP, "created": s.Created,
+				"lastUsed": last, "expires": s.Expires, "current": s.SID() == cur})
+		}
+	})
+	sort.SliceStable(list, func(i, j int) bool {
+		if list[i]["current"] != list[j]["current"] {
+			return list[i]["current"] == true
+		}
+		return list[i]["lastUsed"].(time.Time).After(list[j]["lastUsed"].(time.Time))
+	})
+	writeJSON(w, 200, list)
+}
+
+func (a *App) apiSessionDelete(w http.ResponseWriter, r *http.Request, user string) {
+	id := r.PathValue("id")
+	_, cur := a.session(nil, r)
+	found := false
+	a.store.Update(func(d *DBData) {
+		for i, s := range d.Sessions {
+			if s.Username == user && s.SID() == id {
+				d.Sessions = append(d.Sessions[:i], d.Sessions[i+1:]...)
+				found = true
+				return
+			}
+		}
+	})
+	if !found {
+		writeErr(w, 404, "Diese Anmeldung gibt es nicht mehr.")
+		return
+	}
+	if id == cur {
+		http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: a.secureCookies(), SameSite: http.SameSiteStrictMode})
+	}
+	a.audit(r, user, "", "Gerät abgemeldet", "")
+	writeJSON(w, 200, map[string]any{"ok": true, "self": id == cur})
+}
+
+func (a *App) apiSessionsRevokeOthers(w http.ResponseWriter, r *http.Request, user string) {
+	_, cur := a.session(nil, r)
+	n := 0
+	a.store.Update(func(d *DBData) { n = dropSessions(d, user, cur) })
+	a.audit(r, user, "", "Andere Geräte abgemeldet", fmt.Sprintf("%d Anmeldungen beendet", n))
+	writeJSON(w, 200, map[string]any{"ok": true, "loggedOut": n})
 }
 
 func (a *App) apiTotpBegin(w http.ResponseWriter, r *http.Request, user string) {

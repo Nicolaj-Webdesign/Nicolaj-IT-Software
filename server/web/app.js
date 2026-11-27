@@ -2037,6 +2037,7 @@ class SettingsView {
         <label class="field">Aktuelles Passwort<input class="input" type="password" name="current" required autocomplete="current-password"></label>
         <label class="field">Neues Passwort<input class="input" type="password" name="new" minlength="10" required autocomplete="new-password"><span class="hint">Mindestens 10 Zeichen.</span></label>
         <div><button class="btn primary">Ändern</button></div></form></section>
+      <section class="card card-pad" id="sess"></section>
       <section class="card card-pad" id="reqs"></section>
       <section class="card card-pad" id="ntf"></section>
       <section class="card card-pad" id="upd"></section>
@@ -2046,16 +2047,44 @@ class SettingsView {
     $('#pw', main).onsubmit = async (e) => {
       e.preventDefault();
       const f = e.target;
-      try { await api('POST', '/api/account/password', { current: f.current.value, new: f.new.value }); f.reset(); toast('Passwort geändert', 'ok'); }
-      catch (ex) { toast('Fehler', 'error', ex.message); }
+      try {
+        const r = await api('POST', '/api/account/password', { current: f.current.value, new: f.new.value });
+        f.reset();
+        toast('Passwort geändert', 'ok', r.loggedOut ? `${r.loggedOut} ${r.loggedOut === 1 ? 'anderes Gerät wurde' : 'andere Geräte wurden'} abgemeldet.` : '');
+        this.drawSessions();
+      } catch (ex) { toast('Fehler', 'error', ex.message); }
     };
     this.drawTfa();
+    this.drawSessions();
     this.drawRequests();
     this.drawNotify();
     this.drawUpdates();
     this.drawGitHub();
     this.drawServer();
     this.drawCodes();
+  }
+  async drawSessions() {
+    const box = $('#sess', this.main);
+    if (!box) return;
+    let list;
+    try { list = await api('GET', '/api/account/sessions'); } catch (ex) { box.innerHTML = `<h2>Angemeldete Geräte</h2><p class="muted">${esc(ex.message)}</p>`; return; }
+    const others = list.filter((s) => !s.current).length;
+    box.innerHTML = `<h2 style="margin-bottom:6px">Angemeldete Geräte</h2>
+      <p class="muted" style="margin:0 0 12px">Du bleibst angemeldet, solange du das Dashboard mindestens alle 120 Tage einmal öffnest. Ein verlorenes Handy hier einfach abmelden.</p>
+      <div class="push-list">${list.map((s) => `<div class="push-row"><div><b>${esc(s.agent || 'Unbekanntes Gerät')}</b>${s.current ? ' <span class="pill accent">dieses Gerät</span>' : ''}
+          <div class="small faint">${s.current ? 'gerade aktiv' : 'zuletzt aktiv ' + esc(ago(s.lastUsed))}${s.ip ? ' · ' + esc(s.ip) : ''} · seit ${esc(new Date(s.created).toLocaleDateString('de-DE'))}</div></div>
+          ${s.current ? '' : `<button class="icon-btn" data-sid="${esc(s.id)}" title="Abmelden" aria-label="${esc(s.agent || 'Gerät')} abmelden">${icon('logout', 16)}</button>`}</div>`).join('')}</div>
+      ${others ? `<div class="row"><button class="btn" id="sessout" type="button">${icon('logout')} Alle anderen abmelden</button></div>` : ''}`;
+    $$('[data-sid]', box).forEach((b) => b.onclick = async () => {
+      try { await api('DELETE', `/api/account/sessions/${b.dataset.sid}`); toast('Abgemeldet', 'ok'); } catch (ex) { toast('Fehler', 'error', ex.message); }
+      this.drawSessions();
+    });
+    const out = $('#sessout', box);
+    if (out) out.onclick = async () => {
+      try { const r = await api('POST', '/api/account/sessions/revoke-others'); toast('Erledigt', 'ok', `${r.loggedOut} ${r.loggedOut === 1 ? 'Gerät' : 'Geräte'} abgemeldet.`); }
+      catch (ex) { toast('Fehler', 'error', ex.message); }
+      this.drawSessions();
+    };
   }
   async drawNotify() {
     const box = $('#ntf', this.main);

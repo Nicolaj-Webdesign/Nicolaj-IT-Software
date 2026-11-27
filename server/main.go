@@ -268,6 +268,9 @@ func (a *App) routes() *http.ServeMux {
 	m.HandleFunc("POST /api/login", a.csrf(a.apiLogin))
 	m.HandleFunc("POST /api/logout", a.admin(a.apiLogout))
 	m.HandleFunc("POST /api/account/password", a.admin(a.apiChangePassword))
+	m.HandleFunc("GET /api/account/sessions", a.admin(a.apiSessions))
+	m.HandleFunc("DELETE /api/account/sessions/{id}", a.admin(a.apiSessionDelete))
+	m.HandleFunc("POST /api/account/sessions/revoke-others", a.admin(a.apiSessionsRevokeOthers))
 	m.HandleFunc("POST /api/account/totp/begin", a.admin(a.apiTotpBegin))
 	m.HandleFunc("POST /api/account/totp/enable", a.admin(a.apiTotpEnable))
 	m.HandleFunc("POST /api/account/totp/disable", a.admin(a.apiTotpDisable))
@@ -359,7 +362,7 @@ func (a *App) csrf(h http.HandlerFunc) http.HandlerFunc {
 
 func (a *App) admin(h adminHandler) http.HandlerFunc {
 	return a.csrf(func(w http.ResponseWriter, r *http.Request) {
-		user := a.sessionUser(r)
+		user, _ := a.session(w, r)
 		if user == "" {
 			writeErr(w, 401, "Bitte anmelden.")
 			return

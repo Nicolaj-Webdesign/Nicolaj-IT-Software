@@ -101,7 +101,13 @@ type SessionRec struct {
 	Username  string    `json:"username"`
 	Created   time.Time `json:"created"`
 	Expires   time.Time `json:"expires"`
+	LastUsed  time.Time `json:"lastUsed,omitempty"`
+	IP        string    `json:"ip,omitempty"`
+	Agent     string    `json:"agent,omitempty"` // z. B. „Windows · Edge“
 }
+
+// SID: öffentliche Kennung einer Sitzung (nie das Token selbst).
+func (s *SessionRec) SID() string { return s.TokenHash[:16] }
 
 type DBData struct {
 	Admins      []*Admin              `json:"admins"`

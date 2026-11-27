@@ -51,6 +51,8 @@ Alle Daten liegen im Ordner `data/` neben dem Programm.
 Adresse mit `/admin` am Ende im Browser öffnen (z. B. `https://192.168.178.20:8443/admin`). Die Zertifikatswarnung ist beim ersten Mal normal (eigenes Zertifikat) → „Erweitert“ → „Weiter“.
 Einrichtungscode eingeben, Konto anlegen. **Danach gleich unter Einstellungen die Zwei-Faktor-Anmeldung einschalten.**
 
+Du bleibst angemeldet (auch in der App), solange du das Dashboard mindestens alle 120 Tage einmal öffnest. Unter **Einstellungen › Angemeldete Geräte** siehst du alle Geräte und kannst einzelne oder alle anderen abmelden – etwa wenn ein Handy weg ist. Beim Passwortwechsel werden alle anderen Geräte automatisch abgemeldet.
+
 **Als App installieren** (geht nur über HTTPS mit echtem Zertifikat, also z. B. über Coolify):
 
 - **Windows (Edge/Chrome):** In der Adresszeile rechts auf das Installieren-Symbol klicken – oder im Dashboard unten links auf ⤓. Danach liegt „Fernwartung“ im Startmenü und lässt sich an die Taskleiste anheften.
